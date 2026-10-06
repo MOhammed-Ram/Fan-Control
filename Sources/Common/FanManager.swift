@@ -26,6 +26,13 @@ public final class FanManager: ObservableObject {
     private var lastTickTime: Date? = nil
     private var didRestoreAutoHardware: Bool = false
 
+    // Telemetry Filtering & Deadband State
+    private var smoothedFanRPM: [Int: Double] = [:]
+    private var lastDisplayRPM: [Int: Int] = [:]
+    private var smoothedCpuAvg: Double? = nil
+    private var smoothedCpuPeak: Double? = nil
+    private var lastDisplayIntTemp: Int? = nil
+
     @Published public var isDirectRoot: Bool = false
     @Published public var isHelperConnected: Bool = false
     @Published public var isOverheating: Bool = false
@@ -39,6 +46,24 @@ public final class FanManager: ObservableObject {
         switch menuBarTempSource {
         case .cpuAverage: return thermals.cpuAvg
         case .cpuPeak: return thermals.cpuPeak
+        }
+    }
+
+    public var currentDisplayIntTemp: Int {
+        let t = currentDisplayTemp
+        if let last = lastDisplayIntTemp {
+            // 0.6°C deadband around integer transition to prevent flip-flopping
+            if abs(t - Double(last)) >= 0.6 {
+                let next = Int(t.rounded())
+                lastDisplayIntTemp = next
+                return next
+            } else {
+                return last
+            }
+        } else {
+            let initial = Int(t.rounded())
+            lastDisplayIntTemp = initial
+            return initial
         }
     }
 
@@ -139,11 +164,34 @@ public final class FanManager: ObservableObject {
         var currentFans: [FanData] = []
 
         for i in 0..<fanCount {
-            let actual = Double(smc_get_fan_rpm(Int32(i)))
+            let rawActual = Double(smc_get_fan_rpm(Int32(i)))
             let minRpm = Double(smc_get_fan_min_rpm(Int32(i)))
             let maxRpm = Double(smc_get_fan_max_rpm(Int32(i)))
             let target = Double(smc_get_fan_target_rpm(Int32(i)))
             let mode = Int(smc_get_fan_mode(Int32(i)))
+
+            // Smooth physical tachometer vibration (alpha = 0.35)
+            let smoothed: Double
+            if let prev = smoothedFanRPM[i], rawActual > 0 {
+                smoothed = (0.35 * rawActual) + (0.65 * prev)
+            } else {
+                smoothed = rawActual
+            }
+            smoothedFanRPM[i] = smoothed
+
+            // Quantize display RPM to nearest 10 RPM with ±15 RPM deadband to eliminate numeric flicker
+            let candidateDisplay = Int((smoothed / 10.0).rounded() * 10.0)
+            let currentDisplay: Int
+            if let prevDisplay = lastDisplayRPM[i] {
+                if abs(Double(candidateDisplay - prevDisplay)) < 15.0 && abs(smoothed - Double(prevDisplay)) < 12.0 {
+                    currentDisplay = prevDisplay
+                } else {
+                    currentDisplay = candidateDisplay
+                }
+            } else {
+                currentDisplay = candidateDisplay
+            }
+            lastDisplayRPM[i] = currentDisplay
 
             let name: String
             if fanCount == 2 {
@@ -155,7 +203,9 @@ public final class FanManager: ObservableObject {
             currentFans.append(FanData(
                 index: i,
                 name: name,
-                currentRPM: actual,
+                currentRPM: smoothed,
+                rawRPM: rawActual,
+                displayRPM: currentDisplay,
                 minRPM: minRpm > 0 ? minRpm : 1200,
                 maxRPM: maxRpm > 0 ? maxRpm : 7000,
                 targetRPM: target,
@@ -167,28 +217,48 @@ public final class FanManager: ObservableObject {
             self.fans = currentFans
         }
 
-        let cpuAvg = Double(smc_get_cpu_core_avg())
-        let cpuMax = Double(smc_get_cpu_core_peak())
+        let rawAvg = Double(smc_get_cpu_core_avg())
+        let rawPeak = Double(smc_get_cpu_core_peak())
         let battery = Double(sensors_get_battery_temp())
         let storage = Double(sensors_get_storage_temp())
         let thermalState = ProcessInfo.processInfo.thermalState
 
+        // Apply Exponential Moving Average filter on SoC temperatures
+        let alpha = min(0.9, max(0.05, tempSmoothingAlpha))
+        let smoothAvg: Double
+        if let prev = smoothedCpuAvg {
+            smoothAvg = (alpha * rawAvg) + ((1.0 - alpha) * prev)
+        } else {
+            smoothAvg = rawAvg
+        }
+        smoothedCpuAvg = smoothAvg
+
+        let smoothPeak: Double
+        if let prev = smoothedCpuPeak {
+            smoothPeak = (alpha * rawPeak) + ((1.0 - alpha) * prev)
+        } else {
+            smoothPeak = rawPeak
+        }
+        smoothedCpuPeak = smoothPeak
+
         self.thermals = ThermalData(
-            cpuAvg: cpuAvg,
-            cpuPeak: cpuMax,
+            cpuAvg: smoothAvg,
+            cpuPeak: smoothPeak,
+            rawCpuAvg: rawAvg,
+            rawCpuPeak: rawPeak,
             battery: battery,
             storage: storage,
             thermalPressure: thermalState
         )
 
-        tempHistory.append(cpuAvg)
+        tempHistory.append(smoothAvg)
         if tempHistory.count > 30 { tempHistory.removeFirst() }
 
         let avgRpm = currentFans.isEmpty ? 0.0 : currentFans.map(\.currentRPM).reduce(0, +) / Double(currentFans.count)
         fanHistory.append(avgRpm)
         if fanHistory.count > 30 { fanHistory.removeFirst() }
 
-        if cpuMax >= criticalThreshold {
+        if rawPeak >= criticalThreshold {
             if !isOverheating {
                 isOverheating = true
                 if activeMode != .auto {

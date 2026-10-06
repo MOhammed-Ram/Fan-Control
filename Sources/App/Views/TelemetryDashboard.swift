@@ -195,7 +195,7 @@ private struct FanGaugeCard: View {
                         .font(.system(size: 16))
                         .foregroundColor(fanSpeedColor)
 
-                    Text("\(Int(fan.currentRPM))")
+                    Text("\(fan.displayRPM)")
                         .font(.system(size: 18, weight: .bold, design: .monospaced))
                         .foregroundColor(.primary)
 

@@ -100,7 +100,7 @@ public struct MenuBarPopoverView: View {
                                 .foregroundColor(.accentColor)
                         }
 
-                        Text("\(Int(fan.currentRPM)) RPM")
+                        Text("\(fan.displayRPM) RPM")
                             .font(.system(size: 13, weight: .bold, design: .monospaced))
                             .foregroundColor(.primary)
                     }

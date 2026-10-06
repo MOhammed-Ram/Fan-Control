@@ -99,6 +99,8 @@ public struct FanData: Identifiable, Equatable {
     public var index: Int
     public var name: String
     public var currentRPM: Double
+    public var rawRPM: Double
+    public var displayRPM: Int
     public var minRPM: Double
     public var maxRPM: Double
     public var targetRPM: Double
@@ -116,10 +118,22 @@ public struct FanData: Identifiable, Equatable {
         return ((clamped - minRPM) / (maxRPM - minRPM)) * 100.0
     }
 
-    public init(index: Int, name: String = "", currentRPM: Double = 0, minRPM: Double = 1200, maxRPM: Double = 6000, targetRPM: Double = 0, modeRaw: Int = 0) {
+    public init(
+        index: Int,
+        name: String = "",
+        currentRPM: Double = 0,
+        rawRPM: Double = 0,
+        displayRPM: Int? = nil,
+        minRPM: Double = 1200,
+        maxRPM: Double = 6000,
+        targetRPM: Double = 0,
+        modeRaw: Int = 0
+    ) {
         self.index = index
         self.name = name.isEmpty ? "Fan #\(index + 1)" : name
         self.currentRPM = currentRPM
+        self.rawRPM = rawRPM > 0 ? rawRPM : currentRPM
+        self.displayRPM = displayRPM ?? Int((currentRPM / 10.0).rounded() * 10.0)
         self.minRPM = minRPM
         self.maxRPM = maxRPM
         self.targetRPM = targetRPM
@@ -154,13 +168,25 @@ public enum MenuBarLayoutStyle: String, CaseIterable, Identifiable, Codable {
 public struct ThermalData: Equatable {
     public var cpuAvg: Double
     public var cpuPeak: Double
+    public var rawCpuAvg: Double
+    public var rawCpuPeak: Double
     public var battery: Double
     public var storage: Double
     public var thermalPressure: ProcessInfo.ThermalState
 
-    public init(cpuAvg: Double = 45.0, cpuPeak: Double = 50.0, battery: Double = 32.0, storage: Double = 36.0, thermalPressure: ProcessInfo.ThermalState = .nominal) {
+    public init(
+        cpuAvg: Double = 45.0,
+        cpuPeak: Double = 50.0,
+        rawCpuAvg: Double? = nil,
+        rawCpuPeak: Double? = nil,
+        battery: Double = 32.0,
+        storage: Double = 36.0,
+        thermalPressure: ProcessInfo.ThermalState = .nominal
+    ) {
         self.cpuAvg = cpuAvg
         self.cpuPeak = cpuPeak
+        self.rawCpuAvg = rawCpuAvg ?? cpuAvg
+        self.rawCpuPeak = rawCpuPeak ?? cpuPeak
         self.battery = battery
         self.storage = storage
         self.thermalPressure = thermalPressure

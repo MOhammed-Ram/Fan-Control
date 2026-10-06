@@ -1,12 +1,13 @@
 import AppKit
 import SwiftUI
+import Combine
 
 @MainActor
 public final class MenuBarController: NSObject {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private let manager: FanManager
-    private var updateTimer: Timer?
+    private var cancellables = Set<AnyCancellable>()
 
     // High-Fidelity ProMotion Rotating Fan Animation (120 frames, hardware-synced CADisplayLink)
     private var fanFrames: [NSImage] = []
@@ -94,11 +95,13 @@ public final class MenuBarController: NSObject {
     }
 
     private func startUpdating() {
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
+        // Synchronize directly with FanManager hardware polls in real-time
+        manager.$thermals
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
                 self?.updateStatusTitle()
             }
-        }
+            .store(in: &cancellables)
     }
 
     private func startDisplayLink() {
@@ -220,14 +223,14 @@ public final class MenuBarController: NSObject {
     private func updateStatusTitle() {
         guard let button = statusItem?.button else { return }
 
-        let temp = Int(manager.currentDisplayTemp)
+        let temp = manager.currentDisplayIntTemp
         let fans = manager.fans
 
         switch manager.menuBarLayoutStyle {
         case .stackedDual:
             if fans.count >= 2 {
-                let leftRpm = Int(fans[0].currentRPM)
-                let rightRpm = Int(fans[1].currentRPM)
+                let leftRpm = fans[0].displayRPM
+                let rightRpm = fans[1].displayRPM
 
                 let paragraphStyle = NSMutableParagraphStyle()
                 paragraphStyle.lineSpacing = -2.5
@@ -249,27 +252,27 @@ public final class MenuBarController: NSObject {
 
                 button.attributedTitle = attr
             } else {
-                let rpm = fans.first.map { Int($0.currentRPM) } ?? 0
+                let rpm = fans.first?.displayRPM ?? 0
                 button.attributedTitle = NSAttributedString(string: String(format: " %d rpm • %d°C", rpm, temp), attributes: [
                     .font: NSFont.systemFont(ofSize: 12, weight: .medium)
                 ])
             }
 
         case .singleLineAvg:
-            let avgRpm = fans.isEmpty ? 0 : Int(fans.map(\.currentRPM).reduce(0, +) / Double(fans.count))
+            let avgRpm = fans.isEmpty ? 0 : Int(fans.map { Double($0.displayRPM) }.reduce(0, +) / Double(fans.count))
             button.attributedTitle = NSAttributedString(string: String(format: " %d°C • %d RPM", temp, avgRpm), attributes: [
                 .font: NSFont.systemFont(ofSize: 12, weight: .medium)
             ])
 
         case .singleLineDual:
             if fans.count >= 2 {
-                let leftRpm = Int(fans[0].currentRPM)
-                let rightRpm = Int(fans[1].currentRPM)
+                let leftRpm = fans[0].displayRPM
+                let rightRpm = fans[1].displayRPM
                 button.attributedTitle = NSAttributedString(string: String(format: " %d / %d RPM • %d°C", leftRpm, rightRpm, temp), attributes: [
                     .font: NSFont.systemFont(ofSize: 12, weight: .medium)
                 ])
             } else {
-                let rpm = fans.first.map { Int($0.currentRPM) } ?? 0
+                let rpm = fans.first?.displayRPM ?? 0
                 button.attributedTitle = NSAttributedString(string: String(format: " %d°C • %d RPM", temp, rpm), attributes: [
                     .font: NSFont.systemFont(ofSize: 12, weight: .medium)
                 ])
