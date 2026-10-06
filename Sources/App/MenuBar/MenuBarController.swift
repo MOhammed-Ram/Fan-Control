@@ -8,11 +8,14 @@ public final class MenuBarController: NSObject {
     private let manager: FanManager
     private var updateTimer: Timer?
 
-    // Rotating Fan Animation
+    // High-Fidelity ProMotion Rotating Fan Animation (120 frames, hardware-synced CADisplayLink)
     private var fanFrames: [NSImage] = []
-    private var currentFrameIndex: Int = 0
-    private var animationTimer: Timer?
-    private var currentInterval: TimeInterval = 0.12
+    private var currentDisplayedFrameIndex: Int = -1
+    private var displayLink: AnyObject?
+    private var lastTimestamp: CFTimeInterval = 0.0
+    private var currentAngle: Double = 0.0
+    private var angularVelocity: Double = 200.0
+    private var targetAngularVelocity: Double = 200.0
 
     public var onOpenWindow: (() -> Void)?
 
@@ -24,7 +27,7 @@ public final class MenuBarController: NSObject {
         startUpdating()
     }
 
-    private static func generateFanFrames(count: Int = 12) -> [NSImage] {
+    private static func generateFanFrames(count: Int = 120) -> [NSImage] {
         let size = NSSize(width: 16, height: 16)
         let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
         guard let base = NSImage(systemSymbolName: "fanblades.fill", accessibilityDescription: "Fan")?.withSymbolConfiguration(config) else {
@@ -53,7 +56,7 @@ public final class MenuBarController: NSObject {
     }
 
     private func setupStatusItem() {
-        fanFrames = MenuBarController.generateFanFrames(count: 12)
+        fanFrames = MenuBarController.generateFanFrames(count: 120)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem?.button {
             button.action = #selector(statusBarButtonClicked(_:))
@@ -62,10 +65,12 @@ public final class MenuBarController: NSObject {
             button.imagePosition = .imageLeading
             if let initial = fanFrames.first {
                 button.image = initial
+                currentDisplayedFrameIndex = 0
             }
         }
         updateStatusTitle()
         updateAnimationSpeed()
+        startDisplayLink()
     }
 
     private func setupPopover() {
@@ -96,7 +101,24 @@ public final class MenuBarController: NSObject {
         }
     }
 
-    private func animationTick() {
+    private func startDisplayLink() {
+        guard let button = statusItem?.button else { return }
+        if #available(macOS 14.0, *) {
+            let dl = button.displayLink(target: self, selector: #selector(displayLinkDidFire(_:)))
+            dl.add(to: .main, forMode: .common)
+            self.displayLink = dl
+        } else {
+            let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.fallbackTimerTick()
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            self.displayLink = timer
+        }
+    }
+
+    @objc private func displayLinkDidFire(_ link: CADisplayLink) {
         guard let button = statusItem?.button else { return }
         guard !fanFrames.isEmpty else { return }
 
@@ -106,16 +128,76 @@ public final class MenuBarController: NSObject {
             return
         }
 
-        currentFrameIndex = (currentFrameIndex + 1) % fanFrames.count
-        button.image = fanFrames[currentFrameIndex]
+        let timestamp = link.targetTimestamp
+        if lastTimestamp == 0.0 {
+            lastTimestamp = timestamp
+            return
+        }
+
+        let dt = min(0.05, max(0.001, timestamp - lastTimestamp))
+        lastTimestamp = timestamp
+
+        // Smoothly blend angular velocity towards target to prevent acoustic/visual snapping
+        angularVelocity += (targetAngularVelocity - angularVelocity) * min(1.0, dt * 8.0)
+
+        if angularVelocity <= 5.0 {
+            if currentDisplayedFrameIndex != 0 {
+                currentDisplayedFrameIndex = 0
+                button.image = fanFrames.first
+            }
+            return
+        }
+
+        currentAngle = (currentAngle + angularVelocity * dt).truncatingRemainder(dividingBy: 360.0)
+        let frameIndex = Int((currentAngle / 360.0) * Double(fanFrames.count)) % fanFrames.count
+
+        if frameIndex != currentDisplayedFrameIndex {
+            currentDisplayedFrameIndex = frameIndex
+            button.image = fanFrames[frameIndex]
+        }
+    }
+
+    private func fallbackTimerTick() {
+        guard let button = statusItem?.button else { return }
+        guard !fanFrames.isEmpty else { return }
+
+        if manager.isOverheating {
+            let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+            button.image = NSImage(systemSymbolName: "flame.fill", accessibilityDescription: "Overheat")?.withSymbolConfiguration(config)
+            return
+        }
+
+        let now = CACurrentMediaTime()
+        if lastTimestamp == 0.0 {
+            lastTimestamp = now
+            return
+        }
+
+        let dt = min(0.05, max(0.001, now - lastTimestamp))
+        lastTimestamp = now
+
+        angularVelocity += (targetAngularVelocity - angularVelocity) * min(1.0, dt * 8.0)
+
+        if angularVelocity <= 5.0 {
+            if currentDisplayedFrameIndex != 0 {
+                currentDisplayedFrameIndex = 0
+                button.image = fanFrames.first
+            }
+            return
+        }
+
+        currentAngle = (currentAngle + angularVelocity * dt).truncatingRemainder(dividingBy: 360.0)
+        let frameIndex = Int((currentAngle / 360.0) * Double(fanFrames.count)) % fanFrames.count
+
+        if frameIndex != currentDisplayedFrameIndex {
+            currentDisplayedFrameIndex = frameIndex
+            button.image = fanFrames[frameIndex]
+        }
     }
 
     private func updateAnimationSpeed() {
         if manager.isOverheating {
-            animationTimer?.invalidate()
-            animationTimer = nil
-            let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
-            statusItem?.button?.image = NSImage(systemSymbolName: "flame.fill", accessibilityDescription: "Overheat")?.withSymbolConfiguration(config)
+            targetAngularVelocity = 0.0
             return
         }
 
@@ -123,35 +205,16 @@ public final class MenuBarController: NSObject {
         let avgPct = manager.fans.isEmpty ? 0 : (manager.fans.map(\.percentage).reduce(0, +) / Double(manager.fans.count))
 
         if avgRpm < 100 {
-            // Fan stopped
-            animationTimer?.invalidate()
-            animationTimer = nil
-            statusItem?.button?.image = fanFrames.first
+            targetAngularVelocity = 0.0
             return
         }
 
-        // Speed scaling based on physical fan load percentage:
-        // Idle (~2300 RPM / 0%) -> 0.12s per frame (~1.4s per full 360 spin)
-        // 50% load (~4500 RPM)  -> 0.055s per frame (~0.66s per spin)
-        // 100% Turbo (~7800 RPM)-> 0.025s per frame (~0.3s rapid spin)
+        // Continuous angular velocity in degrees per second:
+        // Idle (~2300 RPM / 0% load)  -> 200 deg/s (~1.8s per 360° turn)
+        // 50% load (~4500 RPM)        -> 480 deg/s (~0.75s per 360° turn)
+        // 100% Turbo (~7800 RPM)      -> 900 deg/s (~0.4s per 360° turn)
         let normalized = max(0.0, min(1.0, avgPct / 100.0))
-        let targetInterval = 0.12 - (normalized * 0.095)
-
-        if animationTimer == nil || abs(currentInterval - targetInterval) > 0.015 {
-            currentInterval = targetInterval
-            startAnimationTimer(interval: targetInterval)
-        }
-    }
-
-    private func startAnimationTimer(interval: TimeInterval) {
-        animationTimer?.invalidate()
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.animationTick()
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.animationTimer = timer
+        targetAngularVelocity = 200.0 + (normalized * 700.0)
     }
 
     private func updateStatusTitle() {
@@ -329,8 +392,12 @@ public final class MenuBarController: NSObject {
     }
 
     @objc private func quitApp() {
-        animationTimer?.invalidate()
-        animationTimer = nil
+        if #available(macOS 14.0, *), let dl = displayLink as? CADisplayLink {
+            dl.invalidate()
+        } else if let timer = displayLink as? Timer {
+            timer.invalidate()
+        }
+        displayLink = nil
         NSApplication.shared.terminate(nil)
     }
 }
