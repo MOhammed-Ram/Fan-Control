@@ -13,7 +13,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingController = NSHostingController(rootView: contentView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 840, height: 780),
+            contentRect: NSRect(x: 0, y: 0, width: 860, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -21,7 +21,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         window.title = "Mac Fan Speed Curve Controller"
         window.contentViewController = hostingController
-        window.minSize = NSSize(width: 780, height: 700)
+        window.minSize = NSSize(width: 820, height: 680)
+        window.maxSize = NSSize(width: 1060, height: 920)
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
 

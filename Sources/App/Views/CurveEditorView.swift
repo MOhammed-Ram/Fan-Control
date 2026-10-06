@@ -61,6 +61,9 @@ public struct CurveEditorView: View {
                 }
             }
 
+            // Curve Preset Selection Bar
+            CurvePresetsBar(manager: manager)
+
             // Main Graph Canvas
             GeometryReader { geo in
                 let width = geo.size.width
@@ -134,7 +137,7 @@ public struct CurveEditorView: View {
                     handleCanvasTap(location: location, rect: plotRect)
                 }
             }
-            .frame(height: 320)
+            .frame(minHeight: 280, idealHeight: 330, maxHeight: 420)
             .background(
                 RoundedRectangle(cornerRadius: 12)
                     .fill(Color(nsColor: .windowBackgroundColor).opacity(0.6))

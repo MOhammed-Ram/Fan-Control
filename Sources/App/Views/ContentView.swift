@@ -12,18 +12,36 @@ public struct ContentView: View {
     public var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                // 1. Real-Time Telemetry Dashboard (Gauges + Thermals)
+                // 1. Privileged Helper Elevation Banner (if in simulation mode)
+                if !manager.hasHardwareControl {
+                    PrivilegedHelperBanner(manager: manager)
+                }
+
+                // 2. Real-Time Telemetry Dashboard (Gauges + Thermals)
                 TelemetryDashboard(manager: manager)
 
-                // 2. Interactive Fan Curve Editor Canvas
-                CurveEditorView(manager: manager, uiState: uiState)
+                // 3. Operating Mode Selector Bar (Always prominent, never hidden!)
+                ControlModeSelector(manager: manager)
 
-                // 3. Control Mode & Preset Profile Selector
-                ProfileSelectorView(manager: manager)
+                // 4. Dynamic Mode Content Panel
+                switch manager.activeMode {
+                case .auto:
+                    AutoStatusPanel(manager: manager)
+
+                case .curve:
+                    CurveEditorView(manager: manager, uiState: uiState)
+
+                case .manual:
+                    ManualControlPanel(manager: manager)
+
+                case .turbo:
+                    TurboStatusPanel(manager: manager)
+                }
             }
-            .padding(20)
+            .padding(18)
+            .frame(maxWidth: .infinity)
         }
-        .frame(minWidth: 780, minHeight: 760)
+        .frame(minWidth: 800, minHeight: 680)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 HStack(spacing: 8) {
