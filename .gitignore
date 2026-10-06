@@ -1,0 +1,24 @@
+# Build artifacts
+build/
+bin/
+*.o
+*.dylib
+*.a
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode & Swift
+.swiftpm/
+xcuserdata/
+*.xcworkspace/
+*.xcodeproj/
+DerivedData/
+
+# Temporary files & logs
+*.log
+*.err
+*~
+*.swp
