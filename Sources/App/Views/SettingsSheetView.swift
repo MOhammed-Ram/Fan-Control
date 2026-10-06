@@ -39,7 +39,7 @@ public struct SettingsSheetView: View {
                                         .font(.system(size: 13, weight: .bold, design: .monospaced))
                                         .foregroundColor(.red)
                                 }
-                                Text("If any SoC die exceeds this temperature, fans will immediately ramp to 100% full blast regardless of the active curve.")
+                                Text("When Curve or Manual mode is active, if any SoC die exceeds this temperature, fans immediately ramp to 100% full blast. In macOS Auto mode, firmware retains exclusive control.")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
 

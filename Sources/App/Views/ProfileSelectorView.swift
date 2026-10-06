@@ -85,7 +85,34 @@ public struct ProfileSelectorView: View {
                 }
             }
 
-            // Curve Presets (when in Curve Control mode)
+            // Auto Mode Firmware Status Banner
+            if manager.activeMode == .auto {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.shield.fill")
+                        .font(.title3)
+                        .foregroundColor(.green)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Native macOS Firmware In Control")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.primary)
+                        Text("App is operating in monitor-only mode. Apple hardware firmware manages all fan speeds, acoustics, and thermal profiles without app interference.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.green.opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.green.opacity(0.2), lineWidth: 1)
+                        )
+                )
+            }
             if manager.activeMode == .curve {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Curve Presets")

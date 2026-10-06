@@ -24,6 +24,7 @@ public final class FanManager: ObservableObject {
     @Published public var currentCommandedPercentage: Double = 0.0
     private var commandedRPMs: [Int: Double] = [:]
     private var lastTickTime: Date? = nil
+    private var didRestoreAutoHardware: Bool = false
 
     @Published public var isDirectRoot: Bool = false
     @Published public var isHelperConnected: Bool = false
@@ -190,12 +191,16 @@ public final class FanManager: ObservableObject {
         if cpuMax >= criticalThreshold {
             if !isOverheating {
                 isOverheating = true
-                statusMessage = "⚠️ CRITICAL TEMP: Overheat Failsafe Engaged"
+                if activeMode != .auto {
+                    statusMessage = "⚠️ CRITICAL TEMP: Overheat Failsafe Engaged"
+                }
             }
         } else {
             if isOverheating {
                 isOverheating = false
-                statusMessage = "Thermal state normalized"
+                if activeMode != .auto {
+                    statusMessage = "Thermal state normalized"
+                }
             }
         }
     }
@@ -203,6 +208,22 @@ public final class FanManager: ObservableObject {
     // MARK: - Active Control Loop
     public func applyFanControl() {
         guard !fans.isEmpty else { return }
+
+        // STRICT GUARANTEE: In macOS Auto mode, the app must NEVER influence fan speed.
+        // Firmware has exclusive, unhindered control.
+        if activeMode == .auto {
+            let avg = fans.isEmpty ? 0.0 : fans.map(\.percentage).reduce(0, +) / Double(fans.count)
+            currentCommandedPercentage = avg
+            statusMessage = "macOS Firmware Controlling Fans"
+            commandedRPMs.removeAll()
+            curveEngine.resetSmoothing()
+            lastTickTime = nil
+            if hasHardwareControl && !didRestoreAutoHardware {
+                writeAuto()
+                didRestoreAutoHardware = true
+            }
+            return
+        }
 
         // Compute elapsed time dt for precise slew-rate integration
         let now = Date()
@@ -217,7 +238,7 @@ public final class FanManager: ObservableObject {
         let maxInc = rampUpRate * dt
         let maxDec = rampDownRate * dt
 
-        // Emergency Overheat Safety Check
+        // Emergency Overheat Safety Check (Only active when the app is actively controlling fans)
         if isOverheating {
             currentCommandedPercentage = 100.0
             if hasHardwareControl {
@@ -231,15 +252,7 @@ public final class FanManager: ObservableObject {
 
         switch activeMode {
         case .auto:
-            let avg = fans.isEmpty ? 0.0 : fans.map(\.percentage).reduce(0, +) / Double(fans.count)
-            currentCommandedPercentage = avg
-            statusMessage = "macOS Firmware Controlling Fans"
-            commandedRPMs.removeAll()
-            curveEngine.resetSmoothing()
-            lastTickTime = nil
-            if hasHardwareControl {
-                writeAuto()
-            }
+            return // Handled above
 
         case .turbo:
             currentCommandedPercentage = 100.0
@@ -306,6 +319,10 @@ public final class FanManager: ObservableObject {
     }
 
     private func writeFanSpeed(index: Int, rpm: Double) {
+        guard activeMode != .auto else {
+            // Absolute prohibition: never write fan speed targets in macOS auto mode
+            return
+        }
         if isDirectRoot {
             _ = smc_set_fan_target(Int32(index), Float(rpm))
         } else if isHelperConnected {
@@ -340,6 +357,9 @@ public final class FanManager: ObservableObject {
     }
 
     public func setMode(_ mode: FanMode) {
+        if mode == .auto {
+            self.didRestoreAutoHardware = false
+        }
         self.activeMode = mode
         saveSettings()
         applyFanControl()

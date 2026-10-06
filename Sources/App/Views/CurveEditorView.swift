@@ -29,6 +29,19 @@ public struct CurveEditorView: View {
 
                 Spacer()
 
+                if manager.activeMode == .auto {
+                    HStack(spacing: 5) {
+                        Circle().fill(Color.green).frame(width: 6, height: 6)
+                        Text("macOS Auto (Read-Only Preview)")
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.primary.opacity(0.05)))
+                }
+
                 if manager.activePreset == .custom {
                     Button(action: resetToDefaults) {
                         Label("Reset Curve", systemImage: "arrow.counterclockwise")

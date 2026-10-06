@@ -141,6 +141,21 @@ public struct MenuBarPopoverView: View {
                 }
             }
 
+            // macOS Firmware Note when in Auto Mode
+            if manager.activeMode == .auto {
+                HStack(spacing: 5) {
+                    Image(systemName: "checkmark.shield.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(.green)
+                    Text("macOS Firmware retains exclusive fan control.")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+                .padding(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.04)))
+            }
+
             // Curve Presets (when in Curve Control)
             if manager.activeMode == .curve {
                 VStack(alignment: .leading, spacing: 6) {
