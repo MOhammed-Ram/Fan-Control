@@ -82,6 +82,8 @@ cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
     <string>2</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>LSUIElement</key>
@@ -90,6 +92,7 @@ cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
 </plist>
 EOF
 
+cp "$DIR/Sources/App/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns" 2>/dev/null || true
 cp "$DIR/Scripts/install-helper.sh" "$APP_DIR/Contents/Resources/install-helper.sh"
 cp "$BIN_DIR/fan-control-helper" "$APP_DIR/Contents/Resources/fan-control-helper" 2>/dev/null || true
 chmod +x "$APP_DIR/Contents/Resources/install-helper.sh" 2>/dev/null || true
