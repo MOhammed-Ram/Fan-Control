@@ -115,8 +115,8 @@ default:
 
 func printStatus() {
     let fanCount = smc_get_fan_count()
-    let cpuAvg = sensors_get_cpu_avg()
-    let cpuMax = sensors_get_cpu_max()
+    let cpuAvg = smc_get_cpu_core_avg()
+    let cpuMax = smc_get_cpu_core_peak()
     let battery = sensors_get_battery_temp()
     let storage = sensors_get_storage_temp()
 
@@ -184,14 +184,16 @@ func runCurveLoop(preset: ProfilePreset) {
         exit(0)
     }
 
-    let engine = CurveEngine(hysteresisBand: 2.0, criticalThreshold: 95.0)
+    let engine = CurveEngine(hysteresisBand: 2.0, criticalThreshold: 95.0, emaAlpha: 0.25)
     let points = preset.defaultPoints
     let fanCount = smc_get_fan_count()
+    var commandedRPMs: [Int: Double] = [:]
 
     while true {
-        let temp = Double(sensors_get_cpu_avg())
-        let peakTemp = Double(sensors_get_cpu_max())
-        let targetPercent = engine.evaluate(temp: temp, points: points, useHysteresis: true)
+        let rawTemp = Double(smc_get_cpu_core_peak())
+        let smoothedTemp = engine.smoothTemperature(rawTemp)
+        let peakTemp = Double(smc_get_cpu_core_peak())
+        let targetPercent = engine.evaluate(temp: smoothedTemp, points: points, useHysteresis: true)
 
         var statusParts: [String] = []
         for i in 0..<fanCount {
@@ -199,20 +201,23 @@ func runCurveLoop(preset: ProfilePreset) {
             let maxR = Double(smc_get_fan_max_rpm(i))
             let currentR = Double(smc_get_fan_rpm(i))
             let targetR = engine.percentToRPM(percent: targetPercent, minRPM: minR, maxRPM: maxR)
+            let prevCommand = commandedRPMs[Int(i)] ?? currentR
+            let nextR = CurveEngine.slewLimit(current: prevCommand, target: targetR, maxIncrease: 120.0, maxDecrease: 60.0)
+            commandedRPMs[Int(i)] = nextR
 
             if isRoot {
-                _ = smc_set_fan_target(i, Float(targetR))
+                _ = smc_set_fan_target(i, Float(nextR))
             } else if isHelper {
-                _ = HelperClient.shared.setFan(index: Int(i), rpm: targetR)
+                _ = HelperClient.shared.setFan(index: Int(i), rpm: nextR)
             }
-            statusParts.append(String(format: "Fan #%d: %.0f/%.0f RPM", i, currentR, targetR))
+            statusParts.append(String(format: "Fan #%d: %.0f -> %.0f RPM", i, currentR, nextR))
         }
 
         let timeStr = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-        print(String(format: "[%@] SoC: %.1f°C (Peak: %.1f°C) -> Target: %3.0f%% | %@",
-                     timeStr, temp, peakTemp, targetPercent, statusParts.joined(separator: " | ")))
+        print(String(format: "[%@] SoC Peak: %.1f°C (Smooth: %.1f°C) -> Target: %3.0f%% | %@",
+                     timeStr, peakTemp, smoothedTemp, targetPercent, statusParts.joined(separator: " | ")))
 
-        Thread.sleep(forTimeInterval: 1.5)
+        Thread.sleep(forTimeInterval: 1.0)
     }
 }
 
@@ -226,8 +231,8 @@ func runMonitorLoop() {
     }
 
     while true {
-        let temp = Double(sensors_get_cpu_avg())
-        let peakTemp = Double(sensors_get_cpu_max())
+        let temp = Double(smc_get_cpu_core_avg())
+        let peakTemp = Double(smc_get_cpu_core_peak())
         let battery = Double(sensors_get_battery_temp())
         let storage = Double(sensors_get_storage_temp())
 

@@ -18,6 +18,13 @@ public final class FanManager: ObservableObject {
     @Published public var criticalThreshold: Double = 95.0
     @Published public var menuBarTempSource: MenuBarTempSource = .cpuPeak
     @Published public var menuBarLayoutStyle: MenuBarLayoutStyle = .stackedDual
+    @Published public var rampUpRate: Double = 120.0 // Max RPM acceleration per second
+    @Published public var rampDownRate: Double = 60.0 // Max RPM deceleration per second
+    @Published public var tempSmoothingAlpha: Double = 0.25 // EMA alpha (0.1..0.8)
+    @Published public var currentCommandedPercentage: Double = 0.0
+    private var commandedRPMs: [Int: Double] = [:]
+    private var lastTickTime: Date? = nil
+
     @Published public var isDirectRoot: Bool = false
     @Published public var isHelperConnected: Bool = false
     @Published public var isOverheating: Bool = false
@@ -104,7 +111,7 @@ public final class FanManager: ObservableObject {
     // MARK: - Polling Loop
     public func startPolling() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.tick()
             }
@@ -197,10 +204,25 @@ public final class FanManager: ObservableObject {
     public func applyFanControl() {
         guard !fans.isEmpty else { return }
 
+        // Compute elapsed time dt for precise slew-rate integration
+        let now = Date()
+        let dt: Double
+        if let last = lastTickTime {
+            dt = min(2.0, max(0.05, now.timeIntervalSince(last)))
+        } else {
+            dt = 0.5
+        }
+        lastTickTime = now
+
+        let maxInc = rampUpRate * dt
+        let maxDec = rampDownRate * dt
+
         // Emergency Overheat Safety Check
         if isOverheating {
+            currentCommandedPercentage = 100.0
             if hasHardwareControl {
                 for fan in fans {
+                    commandedRPMs[fan.index] = fan.maxRPM
                     writeFanSpeed(index: fan.index, rpm: fan.maxRPM)
                 }
             }
@@ -209,45 +231,76 @@ public final class FanManager: ObservableObject {
 
         switch activeMode {
         case .auto:
+            let avg = fans.isEmpty ? 0.0 : fans.map(\.percentage).reduce(0, +) / Double(fans.count)
+            currentCommandedPercentage = avg
             statusMessage = "macOS Firmware Controlling Fans"
+            commandedRPMs.removeAll()
+            curveEngine.resetSmoothing()
+            lastTickTime = nil
             if hasHardwareControl {
                 writeAuto()
             }
 
         case .turbo:
+            currentCommandedPercentage = 100.0
             statusMessage = "100% Full Blast Max Cooling"
             if hasHardwareControl {
                 for fan in fans {
+                    commandedRPMs[fan.index] = fan.maxRPM
                     writeFanSpeed(index: fan.index, rpm: fan.maxRPM)
                 }
             }
 
         case .manual:
-            statusMessage = "Manual Fixed Speed: \(Int(manualRPM)) RPM"
+            let pct = fans.first.map { f in
+                f.maxRPM > f.minRPM ? ((manualRPM - f.minRPM) / (f.maxRPM - f.minRPM)) * 100.0 : 50.0
+            } ?? 50.0
+            currentCommandedPercentage = pct
+            statusMessage = "Manual Target: \(Int(manualRPM)) RPM"
             if hasHardwareControl {
                 for fan in fans {
                     let clamped = max(fan.minRPM, min(fan.maxRPM, manualRPM))
-                    writeFanSpeed(index: fan.index, rpm: clamped)
+                    let current = commandedRPMs[fan.index] ?? fan.currentRPM
+                    let nextRPM = CurveEngine.slewLimit(
+                        current: current,
+                        target: clamped,
+                        maxIncrease: maxInc,
+                        maxDecrease: maxDec
+                    )
+                    commandedRPMs[fan.index] = nextRPM
+                    writeFanSpeed(index: fan.index, rpm: nextRPM)
                 }
             }
 
         case .curve:
             curveEngine.hysteresisBand = hysteresisBand
             curveEngine.criticalThreshold = criticalThreshold
+            curveEngine.emaAlpha = tempSmoothingAlpha
 
-            let points = activePoints
-            let currentTemp = thermals.cpuAvg
-            let targetPercent = curveEngine.evaluate(temp: currentTemp, points: points, useHysteresis: true)
+            let rawTemp = currentDisplayTemp
+            let smoothedTemp = curveEngine.smoothTemperature(rawTemp)
+            let targetPercent = curveEngine.evaluate(temp: smoothedTemp, points: activePoints, useHysteresis: true)
+            currentCommandedPercentage = targetPercent
 
             for fan in fans {
                 let targetRPM = curveEngine.percentToRPM(percent: targetPercent, minRPM: fan.minRPM, maxRPM: fan.maxRPM)
+                let current = commandedRPMs[fan.index] ?? fan.currentRPM
+                let nextRPM = CurveEngine.slewLimit(
+                    current: current,
+                    target: targetRPM,
+                    maxIncrease: maxInc,
+                    maxDecrease: maxDec
+                )
+                commandedRPMs[fan.index] = nextRPM
+
                 if hasHardwareControl {
-                    writeFanSpeed(index: fan.index, rpm: targetRPM)
+                    writeFanSpeed(index: fan.index, rpm: nextRPM)
                 }
             }
 
+            let firstCommanded = commandedRPMs.values.first ?? (fans.first?.currentRPM ?? 0)
             statusMessage = hasHardwareControl ?
-                "Curve Active: \(Int(targetPercent))% Target" :
+                String(format: "Curve Active: %.1f°C (%.0f%%) • Target: %.0f RPM", smoothedTemp, targetPercent, firstCommanded) :
                 "Curve Simulation (Install Helper for Control)"
         }
     }
@@ -274,19 +327,6 @@ public final class FanManager: ObservableObject {
             return customPoints
         }
         return activePreset.defaultPoints
-    }
-
-    public var currentCommandedPercentage: Double {
-        if activeMode == .turbo { return 100.0 }
-        if activeMode == .auto {
-            let avg = fans.isEmpty ? 0.0 : fans.map(\.percentage).reduce(0, +) / Double(fans.count)
-            return avg
-        }
-        if activeMode == .manual {
-            guard let first = fans.first, first.maxRPM > first.minRPM else { return 50.0 }
-            return ((manualRPM - first.minRPM) / (first.maxRPM - first.minRPM)) * 100.0
-        }
-        return curveEngine.evaluate(temp: thermals.cpuAvg, points: activePoints, useHysteresis: false)
     }
 
     // MARK: - Presets & Modes
@@ -351,7 +391,9 @@ public final class FanManager: ObservableObject {
         UserDefaults.standard.set(hysteresisBand, forKey: "HysteresisBand")
         UserDefaults.standard.set(criticalThreshold, forKey: "CriticalThreshold")
         UserDefaults.standard.set(menuBarTempSource.rawValue, forKey: "MenuBarTempSource")
-        UserDefaults.standard.set(menuBarLayoutStyle.rawValue, forKey: "MenuBarLayoutStyle")
+        UserDefaults.standard.set(rampUpRate, forKey: "RampUpRate")
+        UserDefaults.standard.set(rampDownRate, forKey: "RampDownRate")
+        UserDefaults.standard.set(tempSmoothingAlpha, forKey: "TempSmoothingAlpha")
 
         if let encoded = try? JSONEncoder().encode(customPoints) {
             UserDefaults.standard.set(encoded, forKey: "CustomPoints")
@@ -378,6 +420,15 @@ public final class FanManager: ObservableObject {
            let layout = MenuBarLayoutStyle(rawValue: layoutStr) {
             self.menuBarLayoutStyle = layout
         }
+
+        let savedUp = UserDefaults.standard.double(forKey: "RampUpRate")
+        if savedUp >= 20.0 { self.rampUpRate = savedUp }
+
+        let savedDown = UserDefaults.standard.double(forKey: "RampDownRate")
+        if savedDown >= 10.0 { self.rampDownRate = savedDown }
+
+        let savedAlpha = UserDefaults.standard.double(forKey: "TempSmoothingAlpha")
+        if savedAlpha > 0.05 && savedAlpha <= 1.0 { self.tempSmoothingAlpha = savedAlpha }
 
         let savedRPM = UserDefaults.standard.double(forKey: "ManualRPM")
         if savedRPM > 1000 { self.manualRPM = savedRPM }

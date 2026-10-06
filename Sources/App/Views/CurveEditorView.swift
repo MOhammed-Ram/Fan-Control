@@ -72,7 +72,7 @@ public struct CurveEditorView: View {
                     }
 
                     // 3. Live Operating Point Marker (Puck)
-                    let liveTemp = manager.thermals.cpuAvg
+                    let liveTemp = manager.currentDisplayTemp
                     let livePercent = manager.currentCommandedPercentage
                     let livePos = pointToCoord(temp: liveTemp, percent: livePercent, rect: plotRect)
 
@@ -247,10 +247,17 @@ public struct CurveEditorView: View {
         uiState.draggingPointID = pt.id
         uiState.selectedPointID = pt.id
 
-        let (newTemp, newPercent) = coordToPoint(coord: location, rect: rect)
+        let (rawTemp, rawPercent) = coordToPoint(coord: location, rect: rect)
         if let idx = manager.customPoints.firstIndex(where: { $0.id == pt.id }) {
-            manager.customPoints[idx].temp = newTemp
-            manager.customPoints[idx].fanPercent = newPercent
+            // Enforce minimum 3.0°C spacing between adjacent nodes to prevent inverted or colliding splines
+            let minAllowedTemp = (idx > 0) ? (manager.customPoints[idx - 1].temp + 3.0) : minTemp
+            let maxAllowedTemp = (idx < manager.customPoints.count - 1) ? (manager.customPoints[idx + 1].temp - 3.0) : maxTemp
+
+            let clampedTemp = max(minAllowedTemp, min(maxAllowedTemp, rawTemp))
+            let clampedPercent = max(minPercent, min(maxPercent, rawPercent))
+
+            manager.customPoints[idx].temp = clampedTemp
+            manager.customPoints[idx].fanPercent = clampedPercent
             manager.customPoints.sort { $0.temp < $1.temp }
             manager.applyFanControl()
         }
@@ -332,6 +339,10 @@ private struct ControlPointNode: View {
                 .offset(y: -24)
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Fan control node at \(Int(point.temp)) degrees Celsius, \(Int(point.fanPercent)) percent speed")
+        .accessibilityValue("\(Int(point.temp))°C, \(Int(point.fanPercent))%")
+        .accessibilityHint(isCustom ? "Drag to adjust temperature or fan speed" : "Switch to Custom mode to edit this point")
     }
 }
 
@@ -384,5 +395,7 @@ private struct LiveMarker: View {
             )
             .position(x: min(max(pos.x, plotRect.minX + 90), plotRect.maxX - 90), y: max(plotRect.minY + 20, pos.y - 24))
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(String(format: "Live fan operating point: %.1f degrees Celsius, %.0f RPM, %d percent target", temp, rpm, Int(percent)))
     }
 }

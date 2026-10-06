@@ -59,6 +59,16 @@ public struct ContentView: View {
                     Button(action: { uiState.showingSettings = true }) {
                         Image(systemName: "gearshape")
                     }
+                    .keyboardShortcut(",", modifiers: .command)
+                    .help("Preferences (⌘,)")
+
+                    // Close window shortcut (⌘W)
+                    Button("Close") {
+                        NSApp.keyWindow?.performClose(nil)
+                    }
+                    .keyboardShortcut("w", modifiers: .command)
+                    .frame(width: 0, height: 0)
+                    .opacity(0)
                 }
             }
         }

@@ -81,6 +81,97 @@ public struct SettingsSheetView: View {
                         .padding(8)
                     }
 
+                    // Acoustic Smoothing & Fan Ramping
+                    GroupBox(label: Label("Acoustic Smoothing & Fan Ramping", systemImage: "waveform.path")) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            // Acceleration Slew Rate
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("Acceleration Slew Limit (Ramp Up):")
+                                        .font(.subheadline)
+                                    Spacer()
+                                    Text("\(Int(manager.rampUpRate)) RPM/s")
+                                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                                        .foregroundColor(.accentColor)
+                                }
+                                Text("Caps maximum fan acceleration rate. Prevents abrupt, audible spin-up revs during quick CPU spikes.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+
+                                Slider(
+                                    value: Binding(
+                                        get: { manager.rampUpRate },
+                                        set: {
+                                            manager.rampUpRate = $0
+                                            UserDefaults.standard.set($0, forKey: "RampUpRate")
+                                        }
+                                    ),
+                                    in: 30...400,
+                                    step: 10
+                                )
+                            }
+
+                            Divider()
+
+                            // Deceleration Slew Rate
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("Deceleration Slew Limit (Ramp Down):")
+                                        .font(.subheadline)
+                                    Spacer()
+                                    Text("\(Int(manager.rampDownRate)) RPM/s")
+                                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                                        .foregroundColor(.accentColor)
+                                }
+                                Text("Caps maximum fan deceleration rate. Ensures fans spin down smoothly and quietly when workload drops.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+
+                                Slider(
+                                    value: Binding(
+                                        get: { manager.rampDownRate },
+                                        set: {
+                                            manager.rampDownRate = $0
+                                            UserDefaults.standard.set($0, forKey: "RampDownRate")
+                                        }
+                                    ),
+                                    in: 20...200,
+                                    step: 10
+                                )
+                            }
+
+                            Divider()
+
+                            // Thermal Spike EMA Factor
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("Thermal Filter Smoothing (EMA Alpha):")
+                                        .font(.subheadline)
+                                    Spacer()
+                                    Text(String(format: "%.2f", manager.tempSmoothingAlpha))
+                                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                                        .foregroundColor(.accentColor)
+                                }
+                                Text("Exponential Moving Average filter applied to temperatures. Lower values filter noisy spikes; higher values react faster.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+
+                                Slider(
+                                    value: Binding(
+                                        get: { manager.tempSmoothingAlpha },
+                                        set: {
+                                            manager.tempSmoothingAlpha = $0
+                                            UserDefaults.standard.set($0, forKey: "TempSmoothingAlpha")
+                                        }
+                                    ),
+                                    in: 0.10...0.80,
+                                    step: 0.05
+                                )
+                            }
+                        }
+                        .padding(8)
+                    }
+
                     // Hardware & Fan Synchronization
                     GroupBox(label: Label("Fan Behavior", systemImage: "fanblades")) {
                         VStack(alignment: .leading, spacing: 12) {
@@ -185,7 +276,7 @@ public struct SettingsSheetView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             InfoRow(title: "Architecture", value: "Apple Silicon (arm64)")
                             InfoRow(title: "SMC Substrate", value: "AppleSMC (IOKit direct, 80-byte param struct)")
-                            InfoRow(title: "Control Handshake", value: "Ftst diagnostic force mode + F0md manual lock")
+                            InfoRow(title: "Control Handshake", value: "Apple Silicon SMC (F0md manual mode + F0Tg target)")
                             InfoRow(title: "Thermal Sensors", value: "\(sensors_get_count()) active IOHID sensors")
                             InfoRow(title: "Fan Count", value: "\(manager.fans.count) controllable hardware fans")
                         }

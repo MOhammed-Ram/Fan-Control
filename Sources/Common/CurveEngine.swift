@@ -3,13 +3,42 @@ import Foundation
 public final class CurveEngine {
     public var hysteresisBand: Double = 2.0 // Degrees Celsius before lowering speed
     public var criticalThreshold: Double = 95.0 // Emergency 100% threshold
+    public var emaAlpha: Double = 0.25 // Exponential Moving Average smoothing factor
 
     private var lastCommandedPercent: Double = 0.0
     private var lastEffectiveTemp: Double = 40.0
+    private var smoothedTemp: Double? = nil
 
-    public init(hysteresisBand: Double = 2.0, criticalThreshold: Double = 95.0) {
+    public init(hysteresisBand: Double = 2.0, criticalThreshold: Double = 95.0, emaAlpha: Double = 0.25) {
         self.hysteresisBand = hysteresisBand
         self.criticalThreshold = criticalThreshold
+        self.emaAlpha = emaAlpha
+    }
+
+    /// Smooths raw temperature fluctuations using Exponential Moving Average to prevent sudden jitter
+    public func smoothTemperature(_ rawTemp: Double) -> Double {
+        guard let current = smoothedTemp else {
+            smoothedTemp = rawTemp
+            return rawTemp
+        }
+        let smoothed = (emaAlpha * rawTemp) + ((1.0 - emaAlpha) * current)
+        smoothedTemp = smoothed
+        return smoothed
+    }
+
+    public func resetSmoothing() {
+        smoothedTemp = nil
+        lastEffectiveTemp = 40.0
+    }
+
+    /// Rate-limits the change in RPM to ensure silky, continuous acoustic transitions
+    public static func slewLimit(current: Double, target: Double, maxIncrease: Double, maxDecrease: Double) -> Double {
+        if target > current {
+            return min(target, current + maxIncrease)
+        } else if target < current {
+            return max(target, current - maxDecrease)
+        }
+        return target
     }
 
     /// Evaluates the target fan percentage (0..100) for a given temperature using the provided curve points.
