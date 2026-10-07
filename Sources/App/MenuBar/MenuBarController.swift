@@ -17,6 +17,7 @@ public final class MenuBarController: NSObject {
     private var currentAngle: Double = 0.0
     private var angularVelocity: Double = 200.0
     private var targetAngularVelocity: Double = 200.0
+    private var statusTextView: MenuBarStatusTextView?
 
     public var onOpenWindow: (() -> Void)?
 
@@ -30,23 +31,34 @@ public final class MenuBarController: NSObject {
 
     private static func generateFanFrames(count: Int = 120) -> [NSImage] {
         let size = NSSize(width: 16, height: 16)
-        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
-        guard let base = NSImage(systemSymbolName: "fanblades.fill", accessibilityDescription: "Fan")?.withSymbolConfiguration(config) else {
-            return []
-        }
-
         var frames: [NSImage] = []
+
         for i in 0..<count {
-            let angleDegrees = CGFloat(i) * (360.0 / CGFloat(count))
+            let angle = CGFloat(i) * (2.0 * .pi / CGFloat(count))
             let frame = NSImage(size: size, flipped: false) { rect in
                 guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
                 ctx.saveGState()
                 ctx.translateBy(x: rect.midX, y: rect.midY)
-                ctx.rotate(by: -angleDegrees * .pi / 180.0) // clockwise rotation
-                let baseW = base.size.width
-                let baseH = base.size.height
-                let drawRect = CGRect(x: -baseW / 2.0, y: -baseH / 2.0, width: baseW, height: baseH)
-                base.draw(in: drawRect, from: NSRect(origin: .zero, size: base.size), operation: .sourceOver, fraction: 1.0)
+                ctx.rotate(by: -angle) // clockwise rotation
+
+                // Center hub
+                ctx.setFillColor(NSColor.black.cgColor)
+                ctx.fillEllipse(in: CGRect(x: -2.0, y: -2.0, width: 4.0, height: 4.0))
+
+                // 4 rounded aerodynamic blades (exact match to Macs Fan Control style)
+                for b in 0..<4 {
+                    ctx.saveGState()
+                    ctx.rotate(by: CGFloat(b) * (.pi / 2.0))
+                    let path = CGMutablePath()
+                    path.move(to: CGPoint(x: -1.2, y: 1.5))
+                    path.addQuadCurve(to: CGPoint(x: -2.2, y: 5.8), control: CGPoint(x: -2.8, y: 3.5))
+                    path.addArc(center: CGPoint(x: 0, y: 5.8), radius: 2.2, startAngle: .pi, endAngle: 0, clockwise: true)
+                    path.addQuadCurve(to: CGPoint(x: 1.2, y: 1.5), control: CGPoint(x: 2.8, y: 3.5))
+                    path.closeSubpath()
+                    ctx.addPath(path)
+                    ctx.fillPath()
+                    ctx.restoreGState()
+                }
                 ctx.restoreGState()
                 return true
             }
@@ -68,6 +80,12 @@ public final class MenuBarController: NSObject {
                 button.image = initial
                 currentDisplayedFrameIndex = 0
             }
+            button.title = ""
+            button.attributedTitle = NSAttributedString()
+
+            let tv = MenuBarStatusTextView(frame: .zero)
+            button.addSubview(tv)
+            self.statusTextView = tv
         }
         updateStatusTitle()
         updateAnimationSpeed()
@@ -125,12 +143,6 @@ public final class MenuBarController: NSObject {
         guard let button = statusItem?.button else { return }
         guard !fanFrames.isEmpty else { return }
 
-        if manager.isOverheating {
-            let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
-            button.image = NSImage(systemSymbolName: "flame.fill", accessibilityDescription: "Overheat")?.withSymbolConfiguration(config)
-            return
-        }
-
         let timestamp = link.targetTimestamp
         if lastTimestamp == 0.0 {
             lastTimestamp = timestamp
@@ -164,12 +176,6 @@ public final class MenuBarController: NSObject {
         guard let button = statusItem?.button else { return }
         guard !fanFrames.isEmpty else { return }
 
-        if manager.isOverheating {
-            let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
-            button.image = NSImage(systemSymbolName: "flame.fill", accessibilityDescription: "Overheat")?.withSymbolConfiguration(config)
-            return
-        }
-
         let now = CACurrentMediaTime()
         if lastTimestamp == 0.0 {
             lastTimestamp = now
@@ -200,7 +206,7 @@ public final class MenuBarController: NSObject {
 
     private func updateAnimationSpeed() {
         if manager.isOverheating {
-            targetAngularVelocity = 0.0
+            targetAngularVelocity = 900.0 // Turbo spin on overheat
             return
         }
 
@@ -221,69 +227,39 @@ public final class MenuBarController: NSObject {
     }
 
     private func updateStatusTitle() {
-        guard let button = statusItem?.button else { return }
+        guard let tv = statusTextView else { return }
 
         let temp = manager.currentDisplayIntTemp
         let fans = manager.fans
 
-        switch manager.menuBarLayoutStyle {
-        case .stackedDual:
-            if fans.count >= 2 {
-                let leftRpm = fans[0].displayRPM
-                let rightRpm = fans[1].displayRPM
-
-                let paragraphStyle = NSMutableParagraphStyle()
-                paragraphStyle.lineSpacing = -2.5
-                paragraphStyle.alignment = .left
-
-                let attr = NSMutableAttributedString()
-                // Top line: Left fan RPM
-                let line1 = String(format: " %4d rpm\n", leftRpm)
-                attr.append(NSAttributedString(string: line1, attributes: [
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular),
-                    .paragraphStyle: paragraphStyle
-                ]))
-                // Bottom line: Right fan RPM + Temp
-                let line2 = String(format: " %4d rpm   %d°C", rightRpm, temp)
-                attr.append(NSAttributedString(string: line2, attributes: [
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular),
-                    .paragraphStyle: paragraphStyle
-                ]))
-
-                button.attributedTitle = attr
-            } else {
-                let rpm = fans.first?.displayRPM ?? 0
-                button.attributedTitle = NSAttributedString(string: String(format: " %d rpm • %d°C", rpm, temp), attributes: [
-                    .font: NSFont.systemFont(ofSize: 12, weight: .medium)
-                ])
-            }
-
-        case .singleLineAvg:
-            let avgRpm = fans.isEmpty ? 0 : Int(fans.map { Double($0.displayRPM) }.reduce(0, +) / Double(fans.count))
-            button.attributedTitle = NSAttributedString(string: String(format: " %d°C • %d RPM", temp, avgRpm), attributes: [
-                .font: NSFont.systemFont(ofSize: 12, weight: .medium)
-            ])
-
-        case .singleLineDual:
-            if fans.count >= 2 {
-                let leftRpm = fans[0].displayRPM
-                let rightRpm = fans[1].displayRPM
-                button.attributedTitle = NSAttributedString(string: String(format: " %d / %d RPM • %d°C", leftRpm, rightRpm, temp), attributes: [
-                    .font: NSFont.systemFont(ofSize: 12, weight: .medium)
-                ])
-            } else {
-                let rpm = fans.first?.displayRPM ?? 0
-                button.attributedTitle = NSAttributedString(string: String(format: " %d°C • %d RPM", temp, rpm), attributes: [
-                    .font: NSFont.systemFont(ofSize: 12, weight: .medium)
-                ])
-            }
+        tv.temp = temp
+        tv.fanCount = fans.count
+        tv.layoutStyle = manager.menuBarLayoutStyle
+        if fans.count >= 2 {
+            tv.leftRpm = fans[0].displayRPM
+            tv.rightRpm = fans[1].displayRPM
+        } else if let first = fans.first {
+            tv.leftRpm = first.displayRPM
+            tv.rightRpm = first.displayRPM
+        } else {
+            tv.leftRpm = 0
+            tv.rightRpm = 0
         }
+
+        let textWidth = tv.calculateWidth()
+        // Icon takes 16pt + 5pt padding = 21pt leading margin
+        let leadingIconWidth: CGFloat = 21.0
+        let totalWidth = leadingIconWidth + textWidth + 3.0
+        statusItem?.length = totalWidth
+        tv.frame = NSRect(x: leadingIconWidth, y: 0.0, width: textWidth + 3.0, height: 22.0)
+        tv.needsDisplay = true
 
         updateAnimationSpeed()
     }
 
     @objc private func statusBarButtonClicked(_ sender: NSStatusBarButton) {
         guard let event = NSApp.currentEvent else { return }
+        statusTextView?.needsDisplay = true
 
         if event.type == .rightMouseUp {
             // Right-click: quick context menu
@@ -298,7 +274,9 @@ public final class MenuBarController: NSObject {
         guard let pop = popover else { return }
         if pop.isShown {
             pop.performClose(sender)
+            statusTextView?.needsDisplay = true
         } else {
+            statusTextView?.needsDisplay = true
             pop.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
             pop.contentViewController?.view.window?.makeKey()
         }
@@ -402,5 +380,119 @@ public final class MenuBarController: NSObject {
         }
         displayLink = nil
         NSApplication.shared.terminate(nil)
+    }
+}
+
+// MARK: - Pixel-Perfect Menu Bar Status Text View (Macs Fan Control Layout)
+final class MenuBarStatusTextView: NSView {
+    var leftRpm: Int = 0
+    var rightRpm: Int = 0
+    var fanCount: Int = 2
+    var temp: Int = 0
+    var layoutStyle: MenuBarLayoutStyle = .stackedDual
+
+    override var isOpaque: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        return nil // Mouse events pass through directly to NSStatusBarButton
+    }
+
+    func calculateWidth() -> CGFloat {
+        let rpmFont = NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .regular)
+        let tempFont = NSFont.systemFont(ofSize: 13.0, weight: .regular)
+
+        switch layoutStyle {
+        case .stackedDual:
+            if fanCount >= 2 {
+                let leftStr = "\(leftRpm) rpm" as NSString
+                let rightStr = "\(rightRpm) rpm" as NSString
+                let wLeft = leftStr.size(withAttributes: [.font: rpmFont]).width
+                let wRight = rightStr.size(withAttributes: [.font: rpmFont]).width
+                let maxRpmW = max(wLeft, wRight)
+
+                let tempStr = "\(temp)°C" as NSString
+                let wTemp = tempStr.size(withAttributes: [.font: tempFont]).width
+
+                return maxRpmW + 8.0 + wTemp + 4.0
+            } else {
+                let str = "\(leftRpm) rpm   \(temp)°C" as NSString
+                return str.size(withAttributes: [.font: NSFont.systemFont(ofSize: 12.0, weight: .medium)]).width + 6.0
+            }
+
+        case .singleLineAvg:
+            let avg = (leftRpm + rightRpm) / max(1, fanCount)
+            let str = "\(temp)°C • \(avg) RPM" as NSString
+            return str.size(withAttributes: [.font: NSFont.systemFont(ofSize: 12.0, weight: .medium)]).width + 6.0
+
+        case .singleLineDual:
+            let str = "\(leftRpm) / \(rightRpm) RPM • \(temp)°C" as NSString
+            return str.size(withAttributes: [.font: NSFont.systemFont(ofSize: 12.0, weight: .medium)]).width + 6.0
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        let isParentHighlighted = (self.superview as? NSStatusBarButton)?.isHighlighted ?? false
+        let textColor: NSColor = isParentHighlighted ? .white : .labelColor
+
+        switch layoutStyle {
+        case .stackedDual:
+            if fanCount >= 2 {
+                let rpmFont = NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .regular)
+                let tempFont = NSFont.systemFont(ofSize: 13.0, weight: .regular)
+
+                let rpmAttrs: [NSAttributedString.Key: Any] = [
+                    .font: rpmFont,
+                    .foregroundColor: textColor
+                ]
+                let tempAttrs: [NSAttributedString.Key: Any] = [
+                    .font: tempFont,
+                    .foregroundColor: textColor
+                ]
+
+                let leftStr = "\(leftRpm) rpm" as NSString
+                let rightStr = "\(rightRpm) rpm" as NSString
+                let wLeft = leftStr.size(withAttributes: rpmAttrs).width
+                let wRight = rightStr.size(withAttributes: rpmAttrs).width
+                let maxRpmW = max(wLeft, wRight)
+
+                // Top Line (Left Fan)
+                leftStr.draw(at: CGPoint(x: 0, y: 11), withAttributes: rpmAttrs)
+                // Bottom Line (Right Fan)
+                rightStr.draw(at: CGPoint(x: 0, y: 1), withAttributes: rpmAttrs)
+
+                // Vertically Centered Temperature
+                let tempStr = "\(temp)°C" as NSString
+                let tSize = tempStr.size(withAttributes: tempAttrs)
+                let tempX = maxRpmW + 8.0
+                let tempY = (bounds.height - tSize.height) / 2.0
+                tempStr.draw(at: CGPoint(x: tempX, y: tempY), withAttributes: tempAttrs)
+            } else {
+                let font = NSFont.systemFont(ofSize: 12.0, weight: .medium)
+                let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: textColor]
+                let str = "\(leftRpm) rpm   \(temp)°C" as NSString
+                let size = str.size(withAttributes: attrs)
+                let y = (bounds.height - size.height) / 2.0
+                str.draw(at: CGPoint(x: 0, y: y), withAttributes: attrs)
+            }
+
+        case .singleLineAvg:
+            let font = NSFont.systemFont(ofSize: 12.0, weight: .medium)
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: textColor]
+            let avg = (leftRpm + rightRpm) / max(1, fanCount)
+            let str = "\(temp)°C • \(avg) RPM" as NSString
+            let size = str.size(withAttributes: attrs)
+            let y = (bounds.height - size.height) / 2.0
+            str.draw(at: CGPoint(x: 0, y: y), withAttributes: attrs)
+
+        case .singleLineDual:
+            let font = NSFont.systemFont(ofSize: 12.0, weight: .medium)
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: textColor]
+            let str = "\(leftRpm) / \(rightRpm) RPM • \(temp)°C" as NSString
+            let size = str.size(withAttributes: attrs)
+            let y = (bounds.height - size.height) / 2.0
+            str.draw(at: CGPoint(x: 0, y: y), withAttributes: attrs)
+        }
     }
 }

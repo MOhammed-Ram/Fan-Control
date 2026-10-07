@@ -17,7 +17,7 @@ public final class FanManager: ObservableObject {
     @Published public var hysteresisBand: Double = 2.0
     @Published public var criticalThreshold: Double = 100.0
     @Published public var curveTempSource: CurveTempSource = .cpuAverage
-    @Published public var menuBarTempSource: MenuBarTempSource = .cpuPeak
+    @Published public var menuBarTempSource: MenuBarTempSource = .cpuAverage
     @Published public var menuBarLayoutStyle: MenuBarLayoutStyle = .stackedDual
     @Published public var rampUpRate: Double = 120.0 // Max RPM acceleration per second
     @Published public var rampDownRate: Double = 60.0 // Max RPM deceleration per second
@@ -180,27 +180,17 @@ public final class FanManager: ObservableObject {
             let target = Double(smc_get_fan_target_rpm(Int32(i)))
             let mode = Int(smc_get_fan_mode(Int32(i)))
 
-            // Smooth physical tachometer vibration (alpha = 0.35)
+            // Responsive physical tachometer smoothing (alpha = 0.5)
             let smoothed: Double
             if let prev = smoothedFanRPM[i], rawActual > 0 {
-                smoothed = (0.35 * rawActual) + (0.65 * prev)
+                smoothed = (0.5 * rawActual) + (0.5 * prev)
             } else {
                 smoothed = rawActual
             }
             smoothedFanRPM[i] = smoothed
 
-            // Quantize display RPM to nearest 10 RPM with ±15 RPM deadband to eliminate numeric flicker
-            let candidateDisplay = Int((smoothed / 10.0).rounded() * 10.0)
-            let currentDisplay: Int
-            if let prevDisplay = lastDisplayRPM[i] {
-                if abs(Double(candidateDisplay - prevDisplay)) < 15.0 && abs(smoothed - Double(prevDisplay)) < 12.0 {
-                    currentDisplay = prevDisplay
-                } else {
-                    currentDisplay = candidateDisplay
-                }
-            } else {
-                currentDisplay = candidateDisplay
-            }
+            // True physical tachometer RPM (single RPM precision, matching Macs Fan Control)
+            let currentDisplay = Int(smoothed.rounded())
             lastDisplayRPM[i] = currentDisplay
 
             let name: String
@@ -570,7 +560,10 @@ public final class FanManager: ObservableObject {
 
         if let sourceStr = UserDefaults.standard.string(forKey: "MenuBarTempSource"),
            let source = MenuBarTempSource(rawValue: sourceStr) {
-            self.menuBarTempSource = source
+            let isUserCustomized = UserDefaults.standard.bool(forKey: "UserExplicitlySetMenuBarTempSource")
+            self.menuBarTempSource = isUserCustomized ? source : .cpuAverage
+        } else {
+            self.menuBarTempSource = .cpuAverage
         }
 
         if let layoutStr = UserDefaults.standard.string(forKey: "MenuBarLayoutStyle"),

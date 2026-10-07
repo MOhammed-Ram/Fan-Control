@@ -223,6 +223,7 @@ public struct SettingsSheetView: View {
                                 set: {
                                     manager.menuBarTempSource = $0
                                     UserDefaults.standard.set($0.rawValue, forKey: "MenuBarTempSource")
+                                    UserDefaults.standard.set(true, forKey: "UserExplicitlySetMenuBarTempSource")
                                 }
                             )) {
                                 ForEach(MenuBarTempSource.allCases) { source in
