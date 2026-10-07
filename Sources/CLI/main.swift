@@ -184,14 +184,14 @@ func runCurveLoop(preset: ProfilePreset) {
         exit(0)
     }
 
-    let engine = CurveEngine(hysteresisBand: 2.0, criticalThreshold: 95.0, emaAlpha: 0.25)
+    let engine = CurveEngine(hysteresisBand: 2.0, criticalThreshold: 100.0, emaAlpha: 0.25)
     let points = preset.defaultPoints
     let fanCount = smc_get_fan_count()
     var commandedRPMs: [Int: Double] = [:]
 
     while true {
-        let rawTemp = Double(smc_get_cpu_core_peak())
-        let smoothedTemp = engine.smoothTemperature(rawTemp)
+        let rawAvg = Double(smc_get_cpu_core_avg())
+        let smoothedTemp = engine.smoothTemperature(rawAvg)
         let peakTemp = Double(smc_get_cpu_core_peak())
         let targetPercent = engine.evaluate(temp: smoothedTemp, points: points, useHysteresis: true)
 
@@ -214,8 +214,8 @@ func runCurveLoop(preset: ProfilePreset) {
         }
 
         let timeStr = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-        print(String(format: "[%@] SoC Peak: %.1f°C (Smooth: %.1f°C) -> Target: %3.0f%% | %@",
-                     timeStr, peakTemp, smoothedTemp, targetPercent, statusParts.joined(separator: " | ")))
+        print(String(format: "[%@] SoC Avg: %.1f°C (Smooth: %.1f°C, Peak: %.1f°C) -> Target: %3.0f%% | %@",
+                     timeStr, rawAvg, smoothedTemp, peakTemp, targetPercent, statusParts.joined(separator: " | ")))
 
         Thread.sleep(forTimeInterval: 1.0)
     }

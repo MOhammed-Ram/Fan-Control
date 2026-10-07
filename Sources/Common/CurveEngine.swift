@@ -2,14 +2,14 @@ import Foundation
 
 public final class CurveEngine {
     public var hysteresisBand: Double = 2.0 // Degrees Celsius before lowering speed
-    public var criticalThreshold: Double = 95.0 // Emergency 100% threshold
+    public var criticalThreshold: Double = 100.0 // Emergency 100% threshold
     public var emaAlpha: Double = 0.25 // Exponential Moving Average smoothing factor
 
     private var lastCommandedPercent: Double = 0.0
     private var lastEffectiveTemp: Double = 40.0
     private var smoothedTemp: Double? = nil
 
-    public init(hysteresisBand: Double = 2.0, criticalThreshold: Double = 95.0, emaAlpha: Double = 0.25) {
+    public init(hysteresisBand: Double = 2.0, criticalThreshold: Double = 100.0, emaAlpha: Double = 0.25) {
         self.hysteresisBand = hysteresisBand
         self.criticalThreshold = criticalThreshold
         self.emaAlpha = emaAlpha
@@ -43,8 +43,8 @@ public final class CurveEngine {
 
     /// Evaluates the target fan percentage (0..100) for a given temperature using the provided curve points.
     public func evaluate(temp: Double, points: [CurvePoint], useHysteresis: Bool = true) -> Double {
-        // Critical emergency safety override
-        if temp >= criticalThreshold {
+        // Critical emergency safety override (only when hysteresis/control is active)
+        if useHysteresis && temp >= criticalThreshold {
             lastCommandedPercent = 100.0
             lastEffectiveTemp = temp
             return 100.0
@@ -120,15 +120,20 @@ public final class CurveEngine {
         )
     }
 
+    /// Evaluates the exact mathematical point on the curve line without hysteresis (used for chart rendering)
+    public static func evaluateOnCurve(temp: Double, points: [CurvePoint]) -> Double {
+        let engine = CurveEngine(hysteresisBand: 0.0, criticalThreshold: 110.0, emaAlpha: 1.0)
+        return engine.evaluate(temp: temp, points: points, useHysteresis: false)
+    }
+
     /// Generates sample points for rendering a smooth curve on the canvas
     public static func sampleCurve(points: [CurvePoint], minTemp: Double = 30.0, maxTemp: Double = 100.0, steps: Int = 100) -> [(temp: Double, percent: Double)] {
-        let engine = CurveEngine(useHysteresis: false)
         var samples: [(temp: Double, percent: Double)] = []
         let stepSize = (maxTemp - minTemp) / Double(steps)
 
         for i in 0...steps {
             let t = minTemp + Double(i) * stepSize
-            let p = engine.evaluate(temp: t, points: points, useHysteresis: false)
+            let p = evaluateOnCurve(temp: t, points: points)
             samples.append((temp: t, percent: p))
         }
         return samples

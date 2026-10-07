@@ -87,18 +87,19 @@ public struct CurveEditorView: View {
                         drawCurve(context: context, rect: plotRect)
                     }
 
-                    // 3. Live Operating Point Marker (Puck)
-                    let liveTemp = manager.currentDisplayTemp
-                    let livePercent = manager.currentCommandedPercentage
-                    let livePos = pointToCoord(temp: liveTemp, percent: livePercent, rect: plotRect)
+                    // 3. Live Operating Point Marker (Puck - Locked directly to curve line)
+                    let drivingTemp = manager.curveDrivingTemp
+                    let curvePercent = CurveEngine.evaluateOnCurve(temp: drivingTemp, points: manager.activePoints)
+                    let livePos = pointToCoord(temp: drivingTemp, percent: curvePercent, rect: plotRect)
 
                     if livePos.x >= plotRect.minX && livePos.x <= plotRect.maxX {
                         LiveMarker(
                             pos: livePos,
                             plotRect: plotRect,
-                            temp: liveTemp,
-                            percent: livePercent,
-                            rpm: manager.fans.first?.currentRPM ?? 0
+                            temp: drivingTemp,
+                            percent: curvePercent,
+                            rpm: manager.fans.first?.currentRPM ?? 0,
+                            activeMode: manager.activeMode
                         )
                     }
 
@@ -369,6 +370,7 @@ private struct LiveMarker: View {
     let temp: Double
     let percent: Double
     let rpm: Double
+    let activeMode: FanMode
 
     var body: some View {
         ZStack {
@@ -397,10 +399,16 @@ private struct LiveMarker: View {
 
             // Live readout badge
             HStack(spacing: 4) {
-                Circle().fill(Color.green).frame(width: 6, height: 6)
-                Text(String(format: "%.1f°C ➔ %.0f RPM (%d%%)", temp, rpm, Int(percent)))
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white)
+                Circle().fill(activeMode == .auto ? Color.cyan : Color.green).frame(width: 6, height: 6)
+                if activeMode == .auto {
+                    Text(String(format: "%.1f°C • %.0f RPM (macOS Auto)", temp, rpm))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                } else {
+                    Text(String(format: "%.1f°C ➔ %.0f RPM (%d%%)", temp, rpm, Int(percent.rounded())))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
@@ -412,6 +420,6 @@ private struct LiveMarker: View {
             .position(x: min(max(pos.x, plotRect.minX + 90), plotRect.maxX - 90), y: max(plotRect.minY + 20, pos.y - 24))
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(String(format: "Live fan operating point: %.1f degrees Celsius, %.0f RPM, %d percent target", temp, rpm, Int(percent)))
+        .accessibilityLabel(String(format: "Live fan operating point: %.1f degrees Celsius, %.0f RPM, %d percent target", temp, rpm, Int(percent.rounded())))
     }
 }

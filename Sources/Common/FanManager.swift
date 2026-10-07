@@ -15,7 +15,8 @@ public final class FanManager: ObservableObject {
     @Published public var manualRPM: Double = 3500.0
     @Published public var linkFans: Bool = true
     @Published public var hysteresisBand: Double = 2.0
-    @Published public var criticalThreshold: Double = 95.0
+    @Published public var criticalThreshold: Double = 100.0
+    @Published public var curveTempSource: CurveTempSource = .cpuAverage
     @Published public var menuBarTempSource: MenuBarTempSource = .cpuPeak
     @Published public var menuBarLayoutStyle: MenuBarLayoutStyle = .stackedDual
     @Published public var rampUpRate: Double = 120.0 // Max RPM acceleration per second
@@ -32,6 +33,8 @@ public final class FanManager: ObservableObject {
     private var smoothedCpuAvg: Double? = nil
     private var smoothedCpuPeak: Double? = nil
     private var lastDisplayIntTemp: Int? = nil
+    private var overheatTriggerTicks: Int = 0
+    private var overheatClearTicks: Int = 0
 
     @Published public var isDirectRoot: Bool = false
     @Published public var isHelperConnected: Bool = false
@@ -41,6 +44,13 @@ public final class FanManager: ObservableObject {
     // Telemetry history for charts (last 30 data points)
     @Published public var tempHistory: [Double] = []
     @Published public var fanHistory: [Double] = []
+
+    public var curveDrivingTemp: Double {
+        switch curveTempSource {
+        case .cpuAverage: return thermals.cpuAvg
+        case .cpuPeak: return thermals.cpuPeak
+        }
+    }
 
     public var currentDisplayTemp: Double {
         switch menuBarTempSource {
@@ -258,19 +268,48 @@ public final class FanManager: ObservableObject {
         fanHistory.append(avgRpm)
         if fanHistory.count > 30 { fanHistory.removeFirst() }
 
-        if rawPeak >= criticalThreshold {
-            if !isOverheating {
+        // Thermal Overheat Safety Evaluation
+        // On Apple Silicon, peak junction temperatures spike to ~95-100°C for milliseconds.
+        // True thermal emergency requires sustained extreme temperatures.
+        let isEmergencyCandidate: Bool
+        if smoothAvg >= 95.0 {
+            // Bulk SoC average is dangerously high
+            isEmergencyCandidate = true
+        } else if rawPeak >= criticalThreshold && smoothPeak >= criticalThreshold {
+            // Sustained peak core temperature above critical threshold
+            overheatTriggerTicks += 1
+            isEmergencyCandidate = (overheatTriggerTicks >= 4) // Sustained for >= 2.0s (4 ticks at 0.5s)
+        } else {
+            overheatTriggerTicks = max(0, overheatTriggerTicks - 1)
+            isEmergencyCandidate = false
+        }
+
+        if !isOverheating {
+            if isEmergencyCandidate {
                 isOverheating = true
+                overheatClearTicks = 0
                 if activeMode != .auto {
                     statusMessage = "⚠️ CRITICAL TEMP: Overheat Failsafe Engaged"
                 }
             }
         } else {
-            if isOverheating {
-                isOverheating = false
-                if activeMode != .auto {
-                    statusMessage = "Thermal state normalized"
+            // Overheat Hysteresis Release Guard:
+            // Only release emergency state when temps cool significantly below threshold:
+            // Bulk average must be below 84°C AND peak must be below (criticalThreshold - 8°C)
+            let safeAvg = smoothAvg < 84.0
+            let safePeak = smoothPeak < (criticalThreshold - 8.0)
+            if safeAvg && safePeak {
+                overheatClearTicks += 1
+                if overheatClearTicks >= 4 { // Sustained cool for >= 2.0s
+                    isOverheating = false
+                    overheatClearTicks = 0
+                    overheatTriggerTicks = 0
+                    if activeMode != .auto {
+                        statusMessage = "Thermal state normalized"
+                    }
                 }
+            } else {
+                overheatClearTicks = 0
             }
         }
     }
@@ -313,8 +352,15 @@ public final class FanManager: ObservableObject {
             currentCommandedPercentage = 100.0
             if hasHardwareControl {
                 for fan in fans {
-                    commandedRPMs[fan.index] = fan.maxRPM
-                    writeFanSpeed(index: fan.index, rpm: fan.maxRPM)
+                    let current = commandedRPMs[fan.index] ?? fan.currentRPM
+                    let nextRPM = CurveEngine.slewLimit(
+                        current: current,
+                        target: fan.maxRPM,
+                        maxIncrease: rampUpRate * dt * 2.5,
+                        maxDecrease: maxDec
+                    )
+                    commandedRPMs[fan.index] = nextRPM
+                    writeFanSpeed(index: fan.index, rpm: nextRPM)
                 }
             }
             return
@@ -360,10 +406,9 @@ public final class FanManager: ObservableObject {
             curveEngine.criticalThreshold = criticalThreshold
             curveEngine.emaAlpha = tempSmoothingAlpha
 
-            let rawTemp = currentDisplayTemp
-            let smoothedTemp = curveEngine.smoothTemperature(rawTemp)
+            let drivingTemp = curveDrivingTemp
+            let smoothedTemp = curveEngine.smoothTemperature(drivingTemp)
             let targetPercent = curveEngine.evaluate(temp: smoothedTemp, points: activePoints, useHysteresis: true)
-            currentCommandedPercentage = targetPercent
 
             for fan in fans {
                 let targetRPM = curveEngine.percentToRPM(percent: targetPercent, minRPM: fan.minRPM, maxRPM: fan.maxRPM)
@@ -381,9 +426,18 @@ public final class FanManager: ObservableObject {
                 }
             }
 
+            // Sync currentCommandedPercentage continuously with the slewed fan RPM to eliminate step jumps in UI
+            if let firstFan = fans.first, let firstCommanded = commandedRPMs[firstFan.index] {
+                let pct = firstFan.maxRPM > firstFan.minRPM ?
+                    ((firstCommanded - firstFan.minRPM) / (firstFan.maxRPM - firstFan.minRPM)) * 100.0 : targetPercent
+                currentCommandedPercentage = max(0.0, min(100.0, pct))
+            } else {
+                currentCommandedPercentage = targetPercent
+            }
+
             let firstCommanded = commandedRPMs.values.first ?? (fans.first?.currentRPM ?? 0)
             statusMessage = hasHardwareControl ?
-                String(format: "Curve Active: %.1f°C (%.0f%%) • Target: %.0f RPM", smoothedTemp, targetPercent, firstCommanded) :
+                String(format: "Curve Active: %.1f°C (%.0f%%) • Target: %.0f RPM", drivingTemp, currentCommandedPercentage, firstCommanded) :
                 "Curve Simulation (Install Helper for Control)"
         }
     }
@@ -429,6 +483,13 @@ public final class FanManager: ObservableObject {
     public func setMode(_ mode: FanMode) {
         if mode == .auto {
             self.didRestoreAutoHardware = false
+        } else {
+            // Seed commandedRPMs with current physical fan speeds so slewing starts smoothly without steps
+            for fan in fans {
+                if commandedRPMs[fan.index] == nil {
+                    commandedRPMs[fan.index] = fan.currentRPM
+                }
+            }
         }
         self.activeMode = mode
         saveSettings()
@@ -480,6 +541,7 @@ public final class FanManager: ObservableObject {
         UserDefaults.standard.set(linkFans, forKey: "LinkFans")
         UserDefaults.standard.set(hysteresisBand, forKey: "HysteresisBand")
         UserDefaults.standard.set(criticalThreshold, forKey: "CriticalThreshold")
+        UserDefaults.standard.set(curveTempSource.rawValue, forKey: "CurveTempSource")
         UserDefaults.standard.set(menuBarTempSource.rawValue, forKey: "MenuBarTempSource")
         UserDefaults.standard.set(rampUpRate, forKey: "RampUpRate")
         UserDefaults.standard.set(rampDownRate, forKey: "RampDownRate")
@@ -499,6 +561,11 @@ public final class FanManager: ObservableObject {
         if let presetStr = UserDefaults.standard.string(forKey: "ActivePreset"),
            let preset = ProfilePreset(rawValue: presetStr) {
             self.activePreset = preset
+        }
+
+        if let curveSourceStr = UserDefaults.standard.string(forKey: "CurveTempSource"),
+           let curveSource = CurveTempSource(rawValue: curveSourceStr) {
+            self.curveTempSource = curveSource
         }
 
         if let sourceStr = UserDefaults.standard.string(forKey: "MenuBarTempSource"),
@@ -534,6 +601,11 @@ public final class FanManager: ObservableObject {
         if savedHyst > 0.5 { self.hysteresisBand = savedHyst }
 
         let savedCrit = UserDefaults.standard.double(forKey: "CriticalThreshold")
-        if savedCrit > 70.0 { self.criticalThreshold = savedCrit }
+        if savedCrit > 70.0 {
+            // Migrate legacy default 95.0 to Apple Silicon safe 100.0
+            self.criticalThreshold = (savedCrit == 95.0) ? 100.0 : savedCrit
+        } else {
+            self.criticalThreshold = 100.0
+        }
     }
 }

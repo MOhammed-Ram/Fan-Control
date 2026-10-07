@@ -48,9 +48,33 @@ public struct SettingsSheetView: View {
                                         get: { manager.criticalThreshold },
                                         set: { manager.criticalThreshold = $0 }
                                     ),
-                                    in: 80...100,
+                                    in: 90...105,
                                     step: 1
                                 )
+                            }
+
+                            Divider()
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Fan Curve Driving Metric:")
+                                    .font(.subheadline)
+
+                                Picker("", selection: Binding(
+                                    get: { manager.curveTempSource },
+                                    set: {
+                                        manager.curveTempSource = $0
+                                        UserDefaults.standard.set($0.rawValue, forKey: "CurveTempSource")
+                                    }
+                                )) {
+                                    ForEach(CurveTempSource.allCases) { source in
+                                        Text(source.rawValue).tag(source)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+
+                                Text("• CPU Core Average: Driven by bulk heatsink thermal mass. Smooth, progressive, and silent ramp.\n• Peak CPU Core: Reacts immediately to single-core bursts.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
 
                             Divider()

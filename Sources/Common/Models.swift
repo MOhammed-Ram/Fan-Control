@@ -155,6 +155,20 @@ public enum MenuBarTempSource: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+// MARK: - Curve Driving Temperature Source
+public enum CurveTempSource: String, CaseIterable, Identifiable, Codable {
+    case cpuAverage = "CPU Core Average (Recommended)"
+    case cpuPeak = "Peak CPU Core (Aggressive)"
+
+    public var id: String { rawValue }
+    public var shortName: String {
+        switch self {
+        case .cpuAverage: return "Avg"
+        case .cpuPeak: return "Peak"
+        }
+    }
+}
+
 // MARK: - Menu Bar Layout Style
 public enum MenuBarLayoutStyle: String, CaseIterable, Identifiable, Codable {
     case stackedDual = "Stacked Dual (Macs Fan Control style)"
