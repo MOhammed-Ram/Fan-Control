@@ -155,7 +155,7 @@ Fan-Control/
 │   └── CLI/
 │       └── main.swift                # CLI utility entry point
 └── build/
-    ├── FanControl.app                # Complete signed macOS app bundle (v1.5.0)
+    ├── FanControl.app                # Complete signed macOS app bundle (v1.6.0)
     ├── bin/
     │   ├── fan-control-helper        # Privileged helper daemon binary
     │   └── fan-curve-ctl             # Standalone CLI binary

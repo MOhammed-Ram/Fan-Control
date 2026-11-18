@@ -80,7 +80,7 @@ public struct ControlModeSelector: View {
 
     private func modeColor(_ mode: FanMode) -> Color {
         switch mode {
-        case .auto: return .accentColor
+        case .auto: return .green
         case .curve: return .blue
         case .manual: return .orange
         case .turbo: return .red
@@ -313,17 +313,29 @@ public struct ManualControlPanel: View {
                 ]
 
                 ForEach(presets, id: \.label) { p in
+                    let targetR = max(minBound, min(maxBound, p.rpm))
+                    let isMatching = abs(manager.manualRPM - targetR) < 25.0 &&
+                        (manager.linkFans || manager.fans.count < 2 || abs(manager.manualRPMRight - max(minBoundRight, min(maxBoundRight, p.rpm))) < 25.0)
                     Button(action: {
-                        manager.manualRPM = max(minBound, min(maxBound, p.rpm))
+                        manager.manualRPM = targetR
                         manager.manualRPMRight = max(minBoundRight, min(maxBoundRight, p.rpm))
                         manager.saveSettings()
                         manager.applyFanControl()
                     }) {
                         Text(p.label)
                             .font(.caption)
+                            .fontWeight(isMatching ? .semibold : .regular)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
-                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(isMatching ? Color.orange.opacity(0.18) : Color.primary.opacity(0.06))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(isMatching ? Color.orange : Color.clear, lineWidth: 1)
+                                    )
+                            )
+                            .foregroundColor(isMatching ? .orange : .primary)
                     }
                     .buttonStyle(.plain)
                 }

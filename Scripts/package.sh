@@ -102,7 +102,7 @@ pkgbuild --root "$PKG_STAGING/root" \
          --scripts "$PKG_STAGING/scripts" \
          --filter "/\._" \
          --identifier "com.macfancontrol.curveapp" \
-         --version "1.5.0" \
+         --version "1.6.0" \
          --install-location "/" \
          "$OUTPUT_PKG"
 

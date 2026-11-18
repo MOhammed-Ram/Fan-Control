@@ -88,7 +88,10 @@ public struct SettingsSheetView: View {
                                     Text("Hysteresis Deadband:")
                                         .font(.subheadline)
                                     Spacer()
-                                    Text(String(format: "%.1f°C", manager.hysteresisBand))
+                                    let hystDisplay = (manager.temperatureUnit == .fahrenheit)
+                                        ? String(format: "%.1f°F", manager.hysteresisBand * 1.8)
+                                        : String(format: "%.1f°C", manager.hysteresisBand)
+                                    Text(hystDisplay)
                                         .font(.system(size: 13, weight: .bold, design: .monospaced))
                                         .foregroundColor(.accentColor)
                                 }
@@ -604,17 +607,17 @@ public struct SettingsSheetView: View {
             }
         }
         .padding(24)
-        .frame(width: 520, height: 500)
+        .frame(width: 580, height: 640)
     }
 }
 
 public enum AppVersionInfo {
     public static var shortVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.6.0"
     }
 
     public static var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "6"
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "7"
     }
 
     public static var formattedVersion: String {

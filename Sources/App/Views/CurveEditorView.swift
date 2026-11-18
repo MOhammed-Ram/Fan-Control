@@ -451,16 +451,19 @@ public struct CurveEditorView: View {
         manager.applyFanControl()
     }
 
-    // MARK: - Keyboard Shortcuts (Delete & Arrow Keys)
+    // MARK: - Keyboard Shortcuts (Delete, Escape & Arrow Keys)
     private func setupKeyboardMonitor() {
         guard uiState.keyMonitor == nil else { return }
         uiState.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard !uiState.showingSettings,
+            guard !uiState.showingSettings && !uiState.showingAbout,
                   let selectedID = uiState.selectedPointID else {
                 return event
             }
 
             switch event.keyCode {
+            case 53: // Escape (deselect active point)
+                uiState.selectedPointID = nil
+                return nil
             case 51, 117: // Delete / Forward Delete
                 if manager.customPoints.count > 2 {
                     deleteSelectedPoint(selectedID)
@@ -551,6 +554,16 @@ private struct ControlPointNode: View {
     let isCustom: Bool
     let temperatureUnit: TemperatureUnit
 
+    private var tooltipYOffset: CGFloat {
+        point.fanPercent >= 82.0 ? 24.0 : -24.0
+    }
+
+    private var tooltipXOffset: CGFloat {
+        if point.temp <= 36.0 { return 24.0 }
+        if point.temp >= 94.0 { return -24.0 }
+        return 0.0
+    }
+
     var body: some View {
         ZStack {
             if isSelected || isDragging {
@@ -567,20 +580,29 @@ private struct ControlPointNode: View {
                     Circle()
                         .stroke(Color.primary.opacity(0.8), lineWidth: 2)
                 )
+                .onHover { hovering in
+                    if hovering {
+                        NSCursor.pointingHand.push()
+                    } else {
+                        NSCursor.pop()
+                    }
+                }
 
             if isDragging || isSelected {
                 VStack(spacing: 1) {
                     Text("\(temperatureUnit.format(point.temp, decimals: 0)) • \(Int(point.fanPercent))%")
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundColor(.white)
+                        .lineLimit(1)
+                        .fixedSize()
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
                         .background(
                             RoundedRectangle(cornerRadius: 6)
-                                .fill(Color.black.opacity(0.85))
+                                .fill(Color.black.opacity(0.88))
                         )
                 }
-                .offset(y: -24)
+                .offset(x: tooltipXOffset, y: tooltipYOffset)
             }
         }
         .accessibilityElement(children: .ignore)
@@ -602,6 +624,10 @@ private struct LiveMarker: View {
 
     var body: some View {
         let formattedTemp = temperatureUnit.format(temp, decimals: 1)
+        let isCurveInUse = (activeMode == .curve)
+        let halfBadgeWidth: CGFloat = isCurveInUse ? 105.0 : 140.0
+        let badgeY: CGFloat = (pos.y < plotRect.minY + 38.0) ? (pos.y + 24.0) : (pos.y - 24.0)
+
         ZStack {
             // Dashed projection lines to axes
             Path { path in
@@ -611,8 +637,6 @@ private struct LiveMarker: View {
                 path.addLine(to: CGPoint(x: plotRect.minX, y: pos.y))
             }
             .stroke(Color.accentColor.opacity(0.4), style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
-
-            let isCurveInUse = (activeMode == .curve)
 
             // Outer ring
             Circle()
@@ -657,7 +681,10 @@ private struct LiveMarker: View {
                     .fill(Color.black.opacity(0.88))
                     .overlay(Capsule().stroke((isCurveInUse ? Color.orange : Color.secondary).opacity(0.7), lineWidth: 1))
             )
-            .position(x: min(max(pos.x, plotRect.minX + 90), plotRect.maxX - 90), y: max(plotRect.minY + 20, pos.y - 24))
+            .position(
+                x: min(max(pos.x, plotRect.minX + halfBadgeWidth), plotRect.maxX - halfBadgeWidth),
+                y: min(max(badgeY, plotRect.minY + 18.0), plotRect.maxY - 18.0)
+            )
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(String(format: "Live fan operating point: %@, %.0f RPM, %d percent target", formattedTemp, rpm, Int(percent.rounded())))

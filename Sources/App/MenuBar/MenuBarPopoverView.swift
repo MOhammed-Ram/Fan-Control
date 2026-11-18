@@ -3,17 +3,20 @@ import SwiftUI
 public struct MenuBarPopoverView: View {
     @ObservedObject var manager: FanManager
     public var onOpenMainWindow: () -> Void
+    public var onOpenSettings: () -> Void
     public var onOpenAbout: () -> Void
     public var onQuit: () -> Void
 
     public init(
         manager: FanManager,
         onOpenMainWindow: @escaping () -> Void,
+        onOpenSettings: @escaping () -> Void = {},
         onOpenAbout: @escaping () -> Void = {},
         onQuit: @escaping () -> Void
     ) {
         self.manager = manager
         self.onOpenMainWindow = onOpenMainWindow
+        self.onOpenSettings = onOpenSettings
         self.onOpenAbout = onOpenAbout
         self.onQuit = onQuit
     }
@@ -23,6 +26,26 @@ public struct MenuBarPopoverView: View {
         if manager.thermals.cpuAvg >= 75.0 { return .orange }
         if manager.thermals.cpuAvg >= 60.0 { return .yellow }
         return .green
+    }
+
+    private var pressureColor: Color {
+        if manager.isOverheating { return .red }
+        switch manager.thermals.thermalPressure {
+        case .nominal: return .green
+        case .fair: return .yellow
+        case .serious: return .orange
+        case .critical: return .red
+        @unknown default: return .secondary
+        }
+    }
+
+    private func modeColor(_ mode: FanMode) -> Color {
+        switch mode {
+        case .auto: return .green
+        case .curve: return .blue
+        case .manual: return .orange
+        case .turbo: return .red
+        }
     }
 
     public var body: some View {
@@ -43,16 +66,16 @@ public struct MenuBarPopoverView: View {
 
                     HStack(spacing: 4) {
                         Circle()
-                            .fill(tempColor)
+                            .fill(pressureColor)
                             .frame(width: 6, height: 6)
                         Text(manager.thermals.pressureDescription)
                             .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundColor(tempColor)
+                            .foregroundColor(pressureColor)
                             .lineLimit(1)
                     }
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2.5)
-                    .background(Capsule().fill(tempColor.opacity(0.14)))
+                    .background(Capsule().fill(pressureColor.opacity(0.14)))
                     .fixedSize(horizontal: true, vertical: false)
                 }
 
@@ -172,7 +195,7 @@ public struct MenuBarPopoverView: View {
                             .padding(.vertical, 7)
                             .background(
                                 RoundedRectangle(cornerRadius: 7)
-                                    .fill(isSelected ? Color.accentColor : Color.primary.opacity(0.05))
+                                    .fill(isSelected ? modeColor(mode) : Color.primary.opacity(0.05))
                             )
                             .foregroundColor(isSelected ? .white : .primary)
                             .contentShape(Rectangle())
@@ -195,7 +218,30 @@ public struct MenuBarPopoverView: View {
                 }
                 .padding(7)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.04)))
+                .background(RoundedRectangle(cornerRadius: 7).fill(Color.green.opacity(0.08)))
+            }
+
+            // 100% Turbo Banner when in Turbo Mode
+            if manager.activeMode == .turbo {
+                HStack(spacing: 6) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(.red)
+                    Text("Emergency 100% Max Cooling Active")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Auto") {
+                        manager.setMode(.auto)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .controlSize(.mini)
+                }
+                .padding(7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 7).fill(Color.red.opacity(0.10)))
             }
 
             // Curve Presets (when in Curve Control)
@@ -314,7 +360,7 @@ public struct MenuBarPopoverView: View {
             Divider()
 
             // Footer Action Buttons
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Button(action: onOpenMainWindow) {
                     Label("Curve Editor...", systemImage: "waveform.path.ecg")
                         .font(.system(size: 11, weight: .medium))
@@ -322,12 +368,21 @@ public struct MenuBarPopoverView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
 
-                Button(action: onOpenAbout) {
-                    Label("About", systemImage: "info.circle")
+                Button(action: onOpenSettings) {
+                    Image(systemName: "gearshape")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .help("Preferences (⌘,)")
+
+                Button(action: onOpenAbout) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("About Fan Control")
 
                 Spacer()
 

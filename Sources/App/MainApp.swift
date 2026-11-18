@@ -64,6 +64,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
             win.makeKeyAndOrderFront(nil)
             win.orderFrontRegardless()
         }
+        menuBarController?.onOpenSettings = { [weak self] in
+            self?.showSettingsWindow()
+        }
         menuBarController?.onOpenAbout = { [weak self] in
             self?.showAboutWindow()
         }
@@ -84,10 +87,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         setupMainMenu()
     }
 
+    @objc func showSettingsWindow() {
+        guard let win = window else { return }
+        if !fanManager.runAsMenuBarOnly {
+            NSApp.setActivationPolicy(.regular)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        win.setContentSize(NSSize(width: 860, height: 860))
+        win.makeKeyAndOrderFront(nil)
+        win.orderFrontRegardless()
+        uiState.showingAbout = false
+        uiState.showingSettings = true
+    }
+
     @objc func showAboutWindow() {
         if let mainWin = window, mainWin.isVisible {
             NSApp.activate(ignoringOtherApps: true)
             mainWin.makeKeyAndOrderFront(nil)
+            uiState.showingSettings = false
             uiState.showingAbout = true
             return
         }
@@ -127,6 +144,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         let aboutMenuItem = NSMenuItem(title: "About Fan Control", action: #selector(showAboutWindow), keyEquivalent: "")
         aboutMenuItem.target = self
         appMenu.addItem(aboutMenuItem)
+        appMenu.addItem(NSMenuItem.separator())
+        let prefsMenuItem = NSMenuItem(title: "Preferences...", action: #selector(showSettingsWindow), keyEquivalent: ",")
+        prefsMenuItem.target = self
+        appMenu.addItem(prefsMenuItem)
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(NSMenuItem(title: "Hide Fan Control", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"))
         let hideOthers = NSMenuItem(title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")

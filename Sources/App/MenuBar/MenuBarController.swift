@@ -25,6 +25,7 @@ public final class MenuBarController: NSObject {
     private var targetAngularVelocity: Double = 120.0
 
     public var onOpenWindow: (() -> Void)?
+    public var onOpenSettings: (() -> Void)?
     public var onOpenAbout: (() -> Void)?
 
     public init(manager: FanManager) {
@@ -123,6 +124,10 @@ public final class MenuBarController: NSObject {
             onOpenMainWindow: { [weak self] in
                 self?.closePopover()
                 self?.onOpenWindow?()
+            },
+            onOpenSettings: { [weak self] in
+                self?.closePopover()
+                self?.onOpenSettings?()
             },
             onOpenAbout: { [weak self] in
                 self?.closePopover()
@@ -586,6 +591,10 @@ public final class MenuBarController: NSObject {
         openItem.target = self
         menu.addItem(openItem)
 
+        let prefsItem = NSMenuItem(title: "Preferences...", action: #selector(openSettingsWindow), keyEquivalent: ",")
+        prefsItem.target = self
+        menu.addItem(prefsItem)
+
         let aboutItem = NSMenuItem(title: "About Fan Control...", action: #selector(openAboutWindow), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
@@ -644,6 +653,11 @@ public final class MenuBarController: NSObject {
     @objc private func openMainWindow() {
         closePopover()
         onOpenWindow?()
+    }
+
+    @objc private func openSettingsWindow() {
+        closePopover()
+        onOpenSettings?()
     }
 
     @objc private func openAboutWindow() {

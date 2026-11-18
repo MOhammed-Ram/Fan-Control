@@ -16,7 +16,9 @@ public struct TelemetryDashboard: View {
                     thermals: manager.thermals,
                     isOverheating: manager.isOverheating,
                     tempHistory: manager.tempHistory,
-                    temperatureUnit: manager.temperatureUnit
+                    temperatureUnit: manager.temperatureUnit,
+                    curveTempSource: manager.curveTempSource,
+                    drivingTemp: manager.curveDrivingTemp
                 )
 
                 // Right: Fan Gauges
@@ -50,44 +52,64 @@ private struct ThermalsCard: View {
     let isOverheating: Bool
     let tempHistory: [Double]
     let temperatureUnit: TemperatureUnit
+    let curveTempSource: CurveTempSource
+    let drivingTemp: Double
 
     private var tempColor: Color {
-        if isOverheating || thermals.cpuAvg >= 90.0 { return .red }
-        if thermals.cpuAvg >= 75.0 { return .orange }
-        if thermals.cpuAvg >= 60.0 { return .yellow }
+        if isOverheating || drivingTemp >= 90.0 { return .red }
+        if drivingTemp >= 75.0 { return .orange }
+        if drivingTemp >= 60.0 { return .yellow }
         return .green
+    }
+
+    private var pressureColor: Color {
+        if isOverheating { return .red }
+        switch thermals.thermalPressure {
+        case .nominal: return .green
+        case .fair: return .yellow
+        case .serious: return .orange
+        case .critical: return .red
+        @unknown default: return .secondary
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Card Title & Pressure Badge
             HStack {
-                Label("SoC Thermals", systemImage: "cpu")
-                    .font(.headline)
-                    .foregroundColor(.primary)
+                HStack(spacing: 6) {
+                    Label("SoC Thermals", systemImage: "cpu")
+                        .font(.headline)
+                        .foregroundColor(.primary)
+
+                    Text("• \(curveTempSource.shortName)")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.secondary)
+                }
 
                 Spacer()
 
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(tempColor)
+                        .fill(pressureColor)
                         .frame(width: 8, height: 8)
                     Text(thermals.pressureDescription)
                         .font(.caption2)
                         .fontWeight(.semibold)
-                        .foregroundColor(tempColor)
+                        .foregroundColor(pressureColor)
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(
                     Capsule()
-                        .fill(tempColor.opacity(0.12))
+                        .fill(pressureColor.opacity(0.12))
                 )
             }
 
             // Big Temperature Display
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(String(format: "%.1f", temperatureUnit.fromCelsius(thermals.cpuAvg)))
+                Text(String(format: "%.1f", temperatureUnit.fromCelsius(drivingTemp)))
                     .font(.system(size: 42, weight: .bold, design: .rounded))
                     .foregroundColor(tempColor)
 
@@ -173,6 +195,7 @@ private struct FanGaugeCard: View {
                     .font(.subheadline)
                     .fontWeight(.semibold)
                     .foregroundColor(.primary)
+                    .lineLimit(1)
                 Spacer()
                 Text("\(Int(fan.percentage))%")
                     .font(.system(size: 12, weight: .bold, design: .monospaced))
