@@ -58,7 +58,10 @@ public struct ContentView: View {
                     .foregroundColor(manager.activeMode == .turbo ? .white : .orange)
 
                     // About Button
-                    Button(action: { uiState.showingAbout = true }) {
+                    Button(action: {
+                        uiState.showingSettings = false
+                        uiState.showingAbout = true
+                    }) {
                         Image(systemName: "info.circle")
                             .font(.system(size: 15))
                     }
@@ -66,7 +69,10 @@ public struct ContentView: View {
                     .help("About Fan Control")
 
                     // Settings Button
-                    Button(action: { uiState.showingSettings = true }) {
+                    Button(action: {
+                        uiState.showingAbout = false
+                        uiState.showingSettings = true
+                    }) {
                         Image(systemName: "gearshape")
                             .font(.system(size: 15))
                     }

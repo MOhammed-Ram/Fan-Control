@@ -88,7 +88,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
     }
 
     @objc func showSettingsWindow() {
+        aboutWindow?.close()
         guard let win = window else { return }
+        let wasVisible = win.isVisible
         if !fanManager.runAsMenuBarOnly {
             NSApp.setActivationPolicy(.regular)
         }
@@ -97,7 +99,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNoti
         win.makeKeyAndOrderFront(nil)
         win.orderFrontRegardless()
         uiState.showingAbout = false
-        uiState.showingSettings = true
+        if wasVisible {
+            uiState.showingSettings = true
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.uiState.showingSettings = true
+            }
+        }
     }
 
     @objc func showAboutWindow() {

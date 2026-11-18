@@ -17,8 +17,7 @@ public struct TelemetryDashboard: View {
                     isOverheating: manager.isOverheating,
                     tempHistory: manager.tempHistory,
                     temperatureUnit: manager.temperatureUnit,
-                    curveTempSource: manager.curveTempSource,
-                    drivingTemp: manager.curveDrivingTemp
+                    curveTempSource: manager.curveTempSource
                 )
 
                 // Right: Fan Gauges
@@ -53,12 +52,11 @@ private struct ThermalsCard: View {
     let tempHistory: [Double]
     let temperatureUnit: TemperatureUnit
     let curveTempSource: CurveTempSource
-    let drivingTemp: Double
 
     private var tempColor: Color {
-        if isOverheating || drivingTemp >= 90.0 { return .red }
-        if drivingTemp >= 75.0 { return .orange }
-        if drivingTemp >= 60.0 { return .yellow }
+        if isOverheating || thermals.cpuAvg >= 90.0 { return .red }
+        if thermals.cpuAvg >= 75.0 { return .orange }
+        if thermals.cpuAvg >= 60.0 { return .yellow }
         return .green
     }
 
@@ -82,10 +80,11 @@ private struct ThermalsCard: View {
                         .font(.headline)
                         .foregroundColor(.primary)
 
-                    Text("• \(curveTempSource.shortName)")
+                    Text("• Curve: \(curveTempSource.shortName)")
                         .font(.caption)
                         .fontWeight(.medium)
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
                 }
 
                 Spacer()
@@ -107,16 +106,21 @@ private struct ThermalsCard: View {
                 )
             }
 
-            // Big Temperature Display
+            // Big Temperature Display (CPU Core Average)
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(String(format: "%.1f", temperatureUnit.fromCelsius(drivingTemp)))
+                Text(String(format: "%.1f", temperatureUnit.fromCelsius(thermals.cpuAvg)))
                     .font(.system(size: 42, weight: .bold, design: .rounded))
                     .foregroundColor(tempColor)
 
-                Text(temperatureUnit.symbol)
-                    .font(.title2)
-                    .fontWeight(.medium)
-                    .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(temperatureUnit.symbol)
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+                    Text("CPU Avg")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundColor(.secondary.opacity(0.8))
+                }
 
                 Spacer()
 
