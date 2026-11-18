@@ -106,6 +106,15 @@ while true {
     }
 
     if clientFd >= 0 {
+        // Clear inherited O_NONBLOCK on accepted client socket and set 500ms timeout
+        let clientFlags = fcntl(clientFd, F_GETFL, 0)
+        if clientFlags >= 0 {
+            _ = fcntl(clientFd, F_SETFL, clientFlags & ~O_NONBLOCK)
+        }
+        var tv = timeval(tv_sec: 0, tv_usec: 500_000)
+        setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(clientFd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
         var buffer = [UInt8](repeating: 0, count: 512)
         let bytesRead = read(clientFd, &buffer, buffer.count - 1)
         if bytesRead > 0 {
@@ -126,9 +135,55 @@ while true {
                     response = "OK\n"
 
                 case "SET":
-                    if parts.count >= 3, let fanIdx = Int32(parts[1]), let rpm = Float(parts[2]) {
-                        let res = smc_set_fan_target(fanIdx, rpm)
+                    if smc_is_lid_closed() && smc_clamshell_causes_sleep() {
+                        _ = smc_set_all_auto()
+                        isAutoMode = true
+                        response = "OK\n"
+                        break
+                    }
+                    let fanCount = smc_get_fan_count()
+                    if parts.count >= 3,
+                       let fanIdx = Int32(parts[1]),
+                       fanIdx >= 0 && fanIdx < fanCount,
+                       let rawRpm = Float(parts[2]),
+                       rawRpm.isFinite {
+                        let minRpm = smc_get_fan_min_rpm(fanIdx)
+                        let maxRpm = smc_get_fan_max_rpm(fanIdx)
+                        let clampedRpm = max(minRpm, min(maxRpm, rawRpm))
+                        let res = smc_set_fan_target(fanIdx, clampedRpm)
                         if res == 0 {
+                            isAutoMode = false
+                            lastCommandTime = Date()
+                            response = "OK\n"
+                        } else {
+                            response = "FAIL\n"
+                        }
+                    }
+
+                case "SETALL":
+                    if smc_is_lid_closed() && smc_clamshell_causes_sleep() {
+                        _ = smc_set_all_auto()
+                        isAutoMode = true
+                        response = "OK\n"
+                        break
+                    }
+                    let fanCount = Int(smc_get_fan_count())
+                    if parts.count >= 2 && fanCount > 0 {
+                        var allSucceeded = true
+                        for i in 0..<min(fanCount, parts.count - 1) {
+                            if let rawRpm = Float(parts[i + 1]), rawRpm.isFinite {
+                                let fanIdx = Int32(i)
+                                let minRpm = smc_get_fan_min_rpm(fanIdx)
+                                let maxRpm = smc_get_fan_max_rpm(fanIdx)
+                                let clampedRpm = max(minRpm, min(maxRpm, rawRpm))
+                                if smc_set_fan_target(fanIdx, clampedRpm) != 0 {
+                                    allSucceeded = false
+                                }
+                            } else {
+                                allSucceeded = false
+                            }
+                        }
+                        if allSucceeded {
                             isAutoMode = false
                             lastCommandTime = Date()
                             response = "OK\n"
@@ -149,8 +204,12 @@ while true {
         }
         close(clientFd)
     } else {
-        // Watchdog: If fans are in manual mode and no command received for > 12 seconds, restore auto!
-        if !isAutoMode && Date().timeIntervalSince(lastCommandTime) > 12.0 {
+        // Immediately restore macOS auto mode if lid closed for sleep, or if watchdog > 4s
+        if !isAutoMode && smc_is_lid_closed() && smc_clamshell_causes_sleep() {
+            print("⚠️ Lid closed for sleep: Restoring fans to macOS auto mode.")
+            _ = smc_set_all_auto()
+            isAutoMode = true
+        } else if !isAutoMode && Date().timeIntervalSince(lastCommandTime) > 4.0 {
             print("⚠️ Watchdog timeout: Restoring fans to macOS auto mode.")
             _ = smc_set_all_auto()
             isAutoMode = true

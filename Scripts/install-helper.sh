@@ -15,8 +15,8 @@ elif [ -f "$SCRIPT_DIR/../build/bin/fan-control-helper" ]; then
     BIN_SRC="$SCRIPT_DIR/../build/bin/fan-control-helper"
 elif [ -f "$SCRIPT_DIR/bin/fan-control-helper" ]; then
     BIN_SRC="$SCRIPT_DIR/bin/fan-control-helper"
-elif [ -f "/Users/mohamedram/Fan-Control/build/bin/fan-control-helper" ]; then
-    BIN_SRC="/Users/mohamedram/Fan-Control/build/bin/fan-control-helper"
+elif [ -f "/Applications/FanControl.app/Contents/Resources/fan-control-helper" ]; then
+    BIN_SRC="/Applications/FanControl.app/Contents/Resources/fan-control-helper"
 else
     echo "❌ Error: Could not locate fan-control-helper binary."
     exit 1

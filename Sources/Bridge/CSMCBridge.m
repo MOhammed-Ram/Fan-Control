@@ -38,6 +38,8 @@ static CFArrayRef gHIDServices = NULL;
 // Fast Cached HID Service References
 static IOHIDServiceClientRef sCpuServices[64];
 static int sCpuServiceCount = 0;
+static IOHIDServiceClientRef sGpuServices[32];
+static int sGpuServiceCount = 0;
 static IOHIDServiceClientRef sBatteryService = NULL;
 static IOHIDServiceClientRef sStorageService = NULL;
 static bool sSensorsCategorized = false;
@@ -47,7 +49,9 @@ static float s_last_battery_temp = 32.0f;
 static float s_last_storage_temp = 38.0f;
 static float s_last_cpu_core_peak = 0.0f;
 static float s_last_cpu_core_avg = 0.0f;
+static float s_last_gpu_temp = 0.0f;
 static uint64_t s_last_core_reading_time = 0;
+static uint64_t s_last_gpu_reading_time = 0;
 
 // Fan RPM Holding State to prevent single-sample dropout to 0 RPM
 #define MAX_SMC_FANS 4
@@ -64,6 +68,10 @@ typedef struct {
 static SMCKeyMeta sValidCoreKeys[32];
 static int sValidCoreCount = 0;
 static bool sCoreKeysDiscovered = false;
+
+static SMCKeyMeta sValidGpuKeys[32];
+static int sValidGpuCount = 0;
+static bool sGpuKeysDiscovered = false;
 
 static uint32_t fourCharCode(const char *s) {
     uint32_t r = 0;
@@ -133,6 +141,8 @@ void smc_close(void) {
     }
     sCoreKeysDiscovered = false;
     sValidCoreCount = 0;
+    sGpuKeysDiscovered = false;
+    sValidGpuCount = 0;
     pthread_mutex_unlock(&gSMCLock);
 }
 
@@ -364,6 +374,10 @@ int smc_set_fan_auto(int fan) {
     snprintf(keyMode, sizeof(keyMode), "F%dmd", fan);
     uint8_t modeVal = 0;
     smcWriteKey(keyMode, &modeVal, 1, fourCharCode("ui8 "));
+    if (smc_get_fan_mode(fan) != 0) {
+        usleep(5000);
+        smcWriteKey(keyMode, &modeVal, 1, fourCharCode("ui8 "));
+    }
     return 0;
 }
 
@@ -410,6 +424,7 @@ int sensors_init(void) {
     // Categorize services once at initialization for ultra-fast (0.03ms) zero-allocation polling
     CFIndex count = CFArrayGetCount(gHIDServices);
     sCpuServiceCount = 0;
+    sGpuServiceCount = 0;
     sBatteryService = NULL;
     sStorageService = NULL;
 
@@ -421,7 +436,9 @@ int sensors_init(void) {
             CFStringGetCString((CFStringRef)prop, name, sizeof(name), kCFStringEncodingUTF8);
             CFRelease(prop);
 
-            if (strstr(name, "tdie") != NULL && sCpuServiceCount < 64) {
+            if ((strstr(name, "GPU") != NULL || strstr(name, "gpu") != NULL) && sGpuServiceCount < 32) {
+                sGpuServices[sGpuServiceCount++] = service;
+            } else if (strstr(name, "tdie") != NULL && sCpuServiceCount < 64) {
                 sCpuServices[sCpuServiceCount++] = service;
             } else if (!sBatteryService && (strstr(name, "battery") != NULL || strstr(name, "gas gauge") != NULL)) {
                 sBatteryService = service;
@@ -437,6 +454,7 @@ int sensors_init(void) {
 
 void sensors_close(void) {
     sCpuServiceCount = 0;
+    sGpuServiceCount = 0;
     sBatteryService = NULL;
     sStorageService = NULL;
     sSensorsCategorized = false;
@@ -529,11 +547,40 @@ float sensors_get_cpu_max(void) {
     return (maxVal > 0.0) ? (float)maxVal : 50.0f;
 }
 
+static float sensors_get_gpu_avg_hid(void) {
+    if (!sSensorsCategorized && sensors_init() != 0) return 0.0f;
+    if (sGpuServiceCount == 0) return 0.0f;
+
+    double sum = 0.0;
+    int validCount = 0;
+
+    for (int i = 0; i < sGpuServiceCount; i++) {
+        CFTypeRef event = IOHIDServiceClientCopyEvent(sGpuServices[i], 15, 0, 0);
+        if (event) {
+            double val = IOHIDEventGetFloatValue(event, (uint32_t)(15 << 16));
+            CFRelease(event);
+            if (val > 10.0 && val < 115.0) {
+                sum += val;
+                validCount++;
+            }
+        }
+    }
+
+    return (validCount > 0) ? (float)(sum / validCount) : 0.0f;
+}
+
 // Candidate SMC Core Keys for Apple Silicon M-series SoCs
 static const char *kCandidateCoreKeys[] = {
     "Tp00", "Tp04", "Tp08", "Tp0C", "Tp0G", "Tp0K", "Tp0O", "Tp0R",
     "Tp0U", "Tp0X", "Tp0a", "Tp0d", "Tp0g", "Tp0j", "Tp0m", "Tp0p",
-    "Tp0u", "Tp0y", "Tp1E", "Tp1I", "Tp1Q", "Tp1U", "Tp1g", "Tg08"
+    "Tp0u", "Tp0y", "Tp1E", "Tp1I", "Tp1Q", "Tp1U", "Tp1g"
+};
+
+// Candidate SMC GPU Die Keys for Apple Silicon M-series SoCs
+static const char *kCandidateGpuKeys[] = {
+    "Tg04", "Tg05", "Tg08", "Tg0C", "Tg0D", "Tg0G", "Tg0K", "Tg0L",
+    "Tg0P", "Tg0T", "Tg0U", "Tg0X", "Tg0b", "Tg0d", "Tg0f", "Tg0j",
+    "Tg0n", "Tg0r", "Tg0v", "Tg0y", "Tg1c", "Tg1g", "Tg1k"
 };
 
 static void smc_discover_core_keys_if_needed(void) {
@@ -565,6 +612,35 @@ static void smc_discover_core_keys_if_needed(void) {
     sCoreKeysDiscovered = (sValidCoreCount > 0);
 }
 
+static void smc_discover_gpu_keys_if_needed(void) {
+    if (sGpuKeysDiscovered) return;
+    if (!gSMCConn && smc_open() != 0) return;
+
+    int totalCandidates = sizeof(kCandidateGpuKeys) / sizeof(kCandidateGpuKeys[0]);
+    sValidGpuCount = 0;
+
+    for (int i = 0; i < totalCandidates; i++) {
+        uint8_t input[STRUCT_SIZE] = {0};
+        uint8_t output[STRUCT_SIZE] = {0};
+        setU32(input, OFF_KEY, fourCharCode(kCandidateGpuKeys[i]));
+        input[OFF_DATA8] = SMC_CMD_READ_KEYINFO;
+        if (smcCall_unlocked(input, output) != KERN_SUCCESS) continue;
+
+        uint32_t size = getU32(output, OFF_DATASIZE);
+        uint32_t type = getU32(output, OFF_DATATYPE);
+        if (size == 4 && type == fourCharCode("flt ")) {
+            sValidGpuKeys[sValidGpuCount].keyInt = fourCharCode(kCandidateGpuKeys[i]);
+            strncpy(sValidGpuKeys[sValidGpuCount].keyStr, kCandidateGpuKeys[i], 4);
+            sValidGpuKeys[sValidGpuCount].keyStr[4] = '\0';
+            sValidGpuKeys[sValidGpuCount].dataSize = size;
+            sValidGpuKeys[sValidGpuCount].dataType = type;
+            sValidGpuCount++;
+            if (sValidGpuCount >= 32) break;
+        }
+    }
+    sGpuKeysDiscovered = (sValidGpuCount > 0);
+}
+
 static double mach_seconds_since(uint64_t start) {
     if (start == 0) return 999999.0;
     uint64_t end = mach_absolute_time();
@@ -582,6 +658,8 @@ float smc_get_cpu_core_peak(void) {
     smc_discover_core_keys_if_needed();
 
     float maxVal = 0.0f;
+    float secondMaxVal = 0.0f;
+    double sum = 0.0;
     int validReadings = 0;
 
     if (sValidCoreCount > 0) {
@@ -596,7 +674,13 @@ float smc_get_cpu_core_peak(void) {
             if (smcCall_unlocked(input, output) == KERN_SUCCESS && output[OFF_RESULT] == 0) {
                 float v = *(float *)(output + OFF_BYTES);
                 if (v > 10.0f && v < 115.0f) {
-                    if (v > maxVal) maxVal = v;
+                    if (v >= maxVal) {
+                        secondMaxVal = maxVal;
+                        maxVal = v;
+                    } else if (v > secondMaxVal) {
+                        secondMaxVal = v;
+                    }
+                    sum += v;
                     validReadings++;
                 }
             }
@@ -605,9 +689,17 @@ float smc_get_cpu_core_peak(void) {
     pthread_mutex_unlock(&gSMCLock);
 
     if (validReadings > 0 && maxVal > 0.0f) {
-        s_last_cpu_core_peak = maxVal;
+        float peakResult = maxVal;
+        if (validReadings >= 4 && secondMaxVal > 0.0f) {
+            float avgVal = (float)(sum / validReadings);
+            // Average top 2 core diodes and cap isolated single-junction micro-spikes to avg + 15°C
+            float clusterPeak = (maxVal + secondMaxVal) * 0.5f;
+            float maxPlausiblePeak = avgVal + 15.0f;
+            peakResult = (clusterPeak < maxPlausiblePeak) ? clusterPeak : maxPlausiblePeak;
+        }
+        s_last_cpu_core_peak = peakResult;
         s_last_core_reading_time = mach_absolute_time();
-        return maxVal;
+        return peakResult;
     }
 
     // Critical Stability Guard:
@@ -665,6 +757,59 @@ float smc_get_cpu_core_avg(void) {
     return sensors_get_cpu_avg();
 }
 
+float smc_get_gpu_temp(void) {
+    if (!gSMCConn && smc_open() != 0) {
+        if (s_last_gpu_temp > 0.0f) return s_last_gpu_temp;
+        float hidGpu = sensors_get_gpu_avg_hid();
+        return (hidGpu > 10.0f) ? hidGpu : sensors_get_cpu_avg();
+    }
+
+    pthread_mutex_lock(&gSMCLock);
+    smc_discover_gpu_keys_if_needed();
+
+    double sum = 0.0;
+    int count = 0;
+
+    if (sValidGpuCount > 0) {
+        for (int i = 0; i < sValidGpuCount; i++) {
+            uint8_t input[STRUCT_SIZE] = {0};
+            uint8_t output[STRUCT_SIZE] = {0};
+            setU32(input, OFF_KEY, sValidGpuKeys[i].keyInt);
+            setU32(input, OFF_DATASIZE, sValidGpuKeys[i].dataSize);
+            setU32(input, OFF_DATATYPE, sValidGpuKeys[i].dataType);
+            input[OFF_DATA8] = SMC_CMD_READ_BYTES;
+
+            if (smcCall_unlocked(input, output) == KERN_SUCCESS && output[OFF_RESULT] == 0) {
+                float v = *(float *)(output + OFF_BYTES);
+                if (v > 10.0f && v < 115.0f) {
+                    sum += v;
+                    count++;
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&gSMCLock);
+
+    if (count > 0) {
+        float avg = (float)(sum / count);
+        s_last_gpu_temp = avg;
+        s_last_gpu_reading_time = mach_absolute_time();
+        return avg;
+    }
+
+    if (s_last_gpu_temp > 0.0f && mach_seconds_since(s_last_gpu_reading_time) < 3.0) {
+        return s_last_gpu_temp;
+    }
+
+    float hidGpu = sensors_get_gpu_avg_hid();
+    if (hidGpu > 10.0f) {
+        s_last_gpu_temp = hidGpu;
+        return hidGpu;
+    }
+
+    return (s_last_cpu_core_avg > 0.0f) ? s_last_cpu_core_avg : sensors_get_cpu_avg();
+}
+
 float sensors_get_battery_temp(void) {
     if (!sSensorsCategorized && sensors_init() != 0) return s_last_battery_temp;
     if (sBatteryService) {
@@ -695,5 +840,29 @@ float sensors_get_storage_temp(void) {
         }
     }
     return s_last_storage_temp;
+}
+
+static bool read_root_domain_bool(CFStringRef key) {
+    io_service_t rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"));
+    if (!rootDomain) return false;
+
+    bool result = false;
+    CFTypeRef prop = IORegistryEntryCreateCFProperty(rootDomain, key, kCFAllocatorDefault, 0);
+    if (prop) {
+        if (CFGetTypeID(prop) == CFBooleanGetTypeID()) {
+            result = CFBooleanGetValue((CFBooleanRef)prop);
+        }
+        CFRelease(prop);
+    }
+    IOObjectRelease(rootDomain);
+    return result;
+}
+
+bool smc_is_lid_closed(void) {
+    return read_root_domain_bool(CFSTR("AppleClamshellState"));
+}
+
+bool smc_clamshell_causes_sleep(void) {
+    return read_root_domain_bool(CFSTR("AppleClamshellCausesSleep"));
 }
 

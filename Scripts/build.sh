@@ -9,6 +9,7 @@ CACHE_DIR="$BUILD_DIR/cache"
 BIN_DIR="$BUILD_DIR/bin"
 APP_DIR="$BUILD_DIR/FanControl.app"
 
+rm -rf "$APP_DIR"
 mkdir -p "$BUILD_DIR" "$CACHE_DIR" "$BIN_DIR" "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
 echo "🔨 [1/5] Compiling CSMCBridge (SMC & HID Sensors)..."
@@ -44,6 +45,7 @@ swiftc -O \
     -import-objc-header Sources/Bridge/CSMCBridge.h \
     Sources/Common/Models.swift \
     Sources/Common/CurveEngine.swift \
+    Sources/Common/LaunchAtLoginManager.swift \
     Sources/Common/HelperClient.swift \
     Sources/Common/FanManager.swift \
     Sources/App/Views/SettingsSheetView.swift \
@@ -55,7 +57,7 @@ swiftc -O \
     Sources/App/MenuBar/MenuBarController.swift \
     Sources/App/MainApp.swift \
     "$BUILD_DIR/CSMCBridge.o" \
-    -framework Foundation -framework IOKit -framework AppKit -framework SwiftUI \
+    -framework Foundation -framework IOKit -framework AppKit -framework SwiftUI -framework ServiceManagement \
     -o "$APP_DIR/Contents/MacOS/FanControl"
 
 echo "🔨 [5/5] Packaging App Bundle and Helpers..."
@@ -77,9 +79,9 @@ cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1.0</string>
+    <string>1.5.0</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>6</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>CFBundleIconFile</key>
@@ -100,6 +102,7 @@ chmod +x "$APP_DIR/Contents/Resources/install-helper.sh" 2>/dev/null || true
 codesign --force --deep --sign - "$APP_DIR" 2>/dev/null || true
 codesign --force --sign - "$BIN_DIR/fan-curve-ctl" 2>/dev/null || true
 codesign --force --sign - "$BIN_DIR/fan-control-helper" 2>/dev/null || true
+touch "$APP_DIR"
 
 echo "✅ Build complete!"
 echo "   GUI & Menu Bar App: $APP_DIR"

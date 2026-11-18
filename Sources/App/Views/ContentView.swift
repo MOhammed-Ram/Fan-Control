@@ -8,55 +8,38 @@ public struct ContentView: View {
         self.manager = manager
         self.uiState = uiState
     }
-
     public var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                // 1. Privileged Helper Elevation Banner (if in simulation mode)
-                if !manager.hasHardwareControl {
-                    PrivilegedHelperBanner(manager: manager)
-                }
-
-                // 2. Real-Time Telemetry Dashboard (Gauges + Thermals)
-                TelemetryDashboard(manager: manager)
-
-                // 3. Operating Mode Selector Bar (Always prominent, never hidden!)
-                ControlModeSelector(manager: manager)
-
-                // 4. Dynamic Mode Content Panel
-                switch manager.activeMode {
-                case .auto:
-                    AutoStatusPanel(manager: manager)
-
-                case .curve:
-                    CurveEditorView(manager: manager, uiState: uiState)
-
-                case .manual:
-                    ManualControlPanel(manager: manager)
-
-                case .turbo:
-                    TurboStatusPanel(manager: manager)
-                }
+        VStack(spacing: 12) {
+            // 1. Privileged Helper Elevation Banner (if in simulation mode)
+            if !manager.hasHardwareControl {
+                PrivilegedHelperBanner(manager: manager)
             }
-            .padding(18)
-            .frame(maxWidth: .infinity)
+
+            // 2. Real-Time Telemetry Dashboard (Gauges + Thermals)
+            TelemetryDashboard(manager: manager)
+
+            // 3. Operating Mode Selector Bar (Always prominent, never hidden!)
+            ControlModeSelector(manager: manager)
+
+            // 4. Mode-Specific Status / Control Panels
+            if manager.activeMode == .auto {
+                AutoStatusPanel(manager: manager)
+            } else if manager.activeMode == .manual {
+                ManualControlPanel(manager: manager)
+            } else if manager.activeMode == .turbo {
+                TurboStatusPanel(manager: manager)
+            }
+
+            // 5. Interactive Fan Speed Curve (Always visible in all modes, fills remaining vertical space!)
+            CurveEditorView(manager: manager, uiState: uiState)
+                .frame(maxHeight: .infinity)
         }
-        .frame(minWidth: 800, minHeight: 680)
+        .padding(16)
+        .frame(width: 860, height: 860)
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                HStack(spacing: 8) {
-                    Image(systemName: "fanblades.fill")
-                        .font(.title3)
-                        .foregroundColor(.accentColor)
-                    Text("Mac Fan Curve Controller")
-                        .font(.headline)
-                        .fontWeight(.bold)
-                }
-            }
-
             ToolbarItem(placement: .primaryAction) {
                 HStack(spacing: 8) {
-                    // Quick Turbo Button
+                    // Quick Turbo Button (Top-Right)
                     Button(action: {
                         if manager.activeMode == .turbo {
                             manager.setMode(.auto)
@@ -64,19 +47,30 @@ public struct ContentView: View {
                             manager.setEmergencyTurbo()
                         }
                     }) {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 5) {
                             Image(systemName: "bolt.fill")
                             Text(manager.activeMode == .turbo ? "Disable Turbo" : "100% Turbo")
                         }
-                        .foregroundColor(manager.activeMode == .turbo ? .white : .orange)
+                        .fontWeight(.semibold)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(manager.activeMode == .turbo ? .red : .orange.opacity(0.2))
+                    .tint(manager.activeMode == .turbo ? .red : .orange.opacity(0.25))
+                    .foregroundColor(manager.activeMode == .turbo ? .white : .orange)
+
+                    // About Button
+                    Button(action: { uiState.showingAbout = true }) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 15))
+                    }
+                    .buttonStyle(.plain)
+                    .help("About Fan Control")
 
                     // Settings Button
                     Button(action: { uiState.showingSettings = true }) {
                         Image(systemName: "gearshape")
+                            .font(.system(size: 15))
                     }
+                    .buttonStyle(.plain)
                     .keyboardShortcut(",", modifiers: .command)
                     .help("Preferences (⌘,)")
 
@@ -96,6 +90,14 @@ public struct ContentView: View {
         )) {
             SettingsSheetView(manager: manager) {
                 uiState.showingSettings = false
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { uiState.showingAbout },
+            set: { uiState.showingAbout = $0 }
+        )) {
+            AboutSheetView(manager: manager) {
+                uiState.showingAbout = false
             }
         }
     }

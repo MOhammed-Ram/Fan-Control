@@ -89,9 +89,11 @@ public final class CurveEngine {
                     calculatedPercent = p1.fanPercent
                 } else {
                     let t = (effectiveTemp - p1.temp) / segmentRange
-                    // Catmull-Rom spline interpolation for smooth acceleration/deceleration
+                    // Monotonic Catmull-Rom spline interpolation (prevents overshoot/dips between points)
                     let val = catmullRom(p0: p0.fanPercent, p1: p1.fanPercent, p2: p2.fanPercent, p3: p3.fanPercent, t: t)
-                    calculatedPercent = max(0.0, min(100.0, val))
+                    let segMin = max(0.0, min(p1.fanPercent, p2.fanPercent))
+                    let segMax = min(100.0, max(p1.fanPercent, p2.fanPercent))
+                    calculatedPercent = max(segMin, min(segMax, val))
                 }
                 break
             }

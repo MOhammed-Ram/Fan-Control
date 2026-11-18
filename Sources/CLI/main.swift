@@ -117,6 +117,7 @@ func printStatus() {
     let fanCount = smc_get_fan_count()
     let cpuAvg = smc_get_cpu_core_avg()
     let cpuMax = smc_get_cpu_core_peak()
+    let gpuTemp = smc_get_gpu_temp()
     let battery = sensors_get_battery_temp()
     let storage = sensors_get_storage_temp()
 
@@ -132,6 +133,7 @@ func printStatus() {
     print("════════════════════════════════════════════════════════════")
     print(String(format: "  SoC CPU Average:    %5.1f °C", cpuAvg))
     print(String(format: "  SoC CPU Peak Die:   %5.1f °C", cpuMax))
+    print(String(format: "  SoC GPU Die:        %5.1f °C", gpuTemp))
     print(String(format: "  Battery:            %5.1f °C", battery))
     print(String(format: "  Storage (NAND):     %5.1f °C", storage))
     print("  Privilege Level:    \(privString)")
@@ -233,6 +235,7 @@ func runMonitorLoop() {
     while true {
         let temp = Double(smc_get_cpu_core_avg())
         let peakTemp = Double(smc_get_cpu_core_peak())
+        let gpuTemp = Double(smc_get_gpu_temp())
         let battery = Double(sensors_get_battery_temp())
         let storage = Double(sensors_get_storage_temp())
 
@@ -241,7 +244,7 @@ func runMonitorLoop() {
         print("           Mac Fan Controller Live Monitor                  ")
         print("════════════════════════════════════════════════════════════")
         print(String(format: "  SoC Average:   %5.1f °C  |  Peak Die:  %5.1f °C", temp, peakTemp))
-        print(String(format: "  Battery:       %5.1f °C  |  Storage:   %5.1f °C", battery, storage))
+        print(String(format: "  GPU Die:       %5.1f °C  |  Battery:   %5.1f °C  |  SSD: %4.1f °C", gpuTemp, battery, storage))
         print("────────────────────────────────────────────────────────────")
 
         for i in 0..<fanCount {

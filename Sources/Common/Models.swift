@@ -41,11 +41,13 @@ public enum FanMode: String, Codable, CaseIterable {
 }
 
 // MARK: - Fan Profile Preset
-public enum ProfilePreset: String, Codable, CaseIterable {
+public enum ProfilePreset: String, Codable, CaseIterable, Identifiable {
     case silent = "Silent"
     case balanced = "Balanced"
     case performance = "Performance"
     case custom = "Custom"
+
+    public var id: String { rawValue }
 
     public var icon: String {
         switch self {
@@ -141,16 +143,48 @@ public struct FanData: Identifiable, Equatable {
     }
 }
 
+// MARK: - Temperature Unit
+public enum TemperatureUnit: String, CaseIterable, Identifiable, Codable {
+    case celsius = "Celsius (°C)"
+    case fahrenheit = "Fahrenheit (°F)"
+
+    public var id: String { rawValue }
+    public var symbol: String {
+        switch self {
+        case .celsius: return "°C"
+        case .fahrenheit: return "°F"
+        }
+    }
+
+    public func convert(_ celsius: Double) -> Double {
+        switch self {
+        case .celsius: return celsius
+        case .fahrenheit: return (celsius * 9.0 / 5.0) + 32.0
+        }
+    }
+
+    public func fromCelsius(_ celsius: Double) -> Double {
+        return convert(celsius)
+    }
+
+    public func format(_ celsius: Double, decimals: Int = 1) -> String {
+        let val = convert(celsius)
+        return String(format: "%.\(decimals)f%@", val, symbol)
+    }
+}
+
 // MARK: - Menu Bar Temperature Display Mode
 public enum MenuBarTempSource: String, CaseIterable, Identifiable, Codable {
     case cpuAverage = "CPU Core Average"
     case cpuPeak = "Peak CPU Core (Hottest Core)"
+    case gpuDie = "GPU Die Average"
 
     public var id: String { rawValue }
     public var shortName: String {
         switch self {
         case .cpuAverage: return "Avg"
         case .cpuPeak: return "Peak"
+        case .gpuDie: return "GPU"
         }
     }
 }
@@ -158,13 +192,17 @@ public enum MenuBarTempSource: String, CaseIterable, Identifiable, Codable {
 // MARK: - Curve Driving Temperature Source
 public enum CurveTempSource: String, CaseIterable, Identifiable, Codable {
     case cpuAverage = "CPU Core Average (Recommended)"
+    case cpuAndGpuMax = "Max of CPU & GPU"
     case cpuPeak = "Peak CPU Core (Aggressive)"
+    case gpuDie = "GPU Die Only"
 
     public var id: String { rawValue }
     public var shortName: String {
         switch self {
-        case .cpuAverage: return "Avg"
-        case .cpuPeak: return "Peak"
+        case .cpuAverage: return "CPU Avg"
+        case .cpuAndGpuMax: return "CPU+GPU"
+        case .cpuPeak: return "CPU Peak"
+        case .gpuDie: return "GPU"
         }
     }
 }
@@ -174,6 +212,9 @@ public enum MenuBarLayoutStyle: String, CaseIterable, Identifiable, Codable {
     case stackedDual = "Stacked Dual (Macs Fan Control style)"
     case singleLineAvg = "Single Line Average"
     case singleLineDual = "Single Line Both Fans"
+    case tempOnly = "Compact: Temperature Only"
+    case rpmOnly = "Compact: Fan RPM Only"
+    case iconOnly = "Minimal: Fan Icon Only"
 
     public var id: String { rawValue }
 }
@@ -182,8 +223,10 @@ public enum MenuBarLayoutStyle: String, CaseIterable, Identifiable, Codable {
 public struct ThermalData: Equatable {
     public var cpuAvg: Double
     public var cpuPeak: Double
+    public var gpu: Double
     public var rawCpuAvg: Double
     public var rawCpuPeak: Double
+    public var rawGpu: Double
     public var battery: Double
     public var storage: Double
     public var thermalPressure: ProcessInfo.ThermalState
@@ -191,16 +234,20 @@ public struct ThermalData: Equatable {
     public init(
         cpuAvg: Double = 45.0,
         cpuPeak: Double = 50.0,
+        gpu: Double = 42.0,
         rawCpuAvg: Double? = nil,
         rawCpuPeak: Double? = nil,
+        rawGpu: Double? = nil,
         battery: Double = 32.0,
         storage: Double = 36.0,
         thermalPressure: ProcessInfo.ThermalState = .nominal
     ) {
         self.cpuAvg = cpuAvg
         self.cpuPeak = cpuPeak
+        self.gpu = gpu
         self.rawCpuAvg = rawCpuAvg ?? cpuAvg
         self.rawCpuPeak = rawCpuPeak ?? cpuPeak
+        self.rawGpu = rawGpu ?? gpu
         self.battery = battery
         self.storage = storage
         self.thermalPressure = thermalPressure
@@ -220,9 +267,11 @@ public struct ThermalData: Equatable {
 // MARK: - UI Presentation State
 public final class UIState: ObservableObject {
     @Published public var showingSettings: Bool = false
+    @Published public var showingAbout: Bool = false
     @Published public var selectedPointID: UUID? = nil
     @Published public var draggingPointID: UUID? = nil
     @Published public var hoveredPointID: UUID? = nil
+    public var keyMonitor: Any? = nil
 
     public init() {}
 }

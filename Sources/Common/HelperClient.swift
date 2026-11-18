@@ -32,7 +32,7 @@ public final class HelperClient: @unchecked Sendable {
                 }
             }
 
-            var tv = timeval(tv_sec: 1, tv_usec: 0)
+            var tv = timeval(tv_sec: 0, tv_usec: 250_000)
             setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
             setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
@@ -78,11 +78,31 @@ public final class HelperClient: @unchecked Sendable {
         return sendCommand("PING") == "PONG"
     }
 
+    @discardableResult
     public func setFan(index: Int, rpm: Double) -> Bool {
         let cmd = String(format: "SET %d %.0f", index, rpm)
         return sendCommand(cmd) == "OK"
     }
 
+    @discardableResult
+    public func setAllFans(rpms: [Double]) -> Bool {
+        guard !rpms.isEmpty else { return false }
+        let args = rpms.map { String(format: "%.0f", $0) }.joined(separator: " ")
+        let reply = sendCommand("SETALL \(args)")
+        if reply == "OK" {
+            return true
+        }
+        // Fallback for older running helper daemon that only supports individual SET
+        var ok = true
+        for (idx, rpm) in rpms.enumerated() {
+            if !setFan(index: idx, rpm: rpm) {
+                ok = false
+            }
+        }
+        return ok
+    }
+
+    @discardableResult
     public func setAuto() -> Bool {
         return sendCommand("AUTO") == "OK"
     }

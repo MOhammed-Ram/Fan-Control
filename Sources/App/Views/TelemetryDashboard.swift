@@ -12,7 +12,12 @@ public struct TelemetryDashboard: View {
             // Top Row: Thermal Metrics + Fan Gauges
             HStack(alignment: .top, spacing: 16) {
                 // Left: SoC Thermal Overview
-                ThermalsCard(thermals: manager.thermals, isOverheating: manager.isOverheating, tempHistory: manager.tempHistory)
+                ThermalsCard(
+                    thermals: manager.thermals,
+                    isOverheating: manager.isOverheating,
+                    tempHistory: manager.tempHistory,
+                    temperatureUnit: manager.temperatureUnit
+                )
 
                 // Right: Fan Gauges
                 if manager.fans.isEmpty {
@@ -44,6 +49,7 @@ private struct ThermalsCard: View {
     let thermals: ThermalData
     let isOverheating: Bool
     let tempHistory: [Double]
+    let temperatureUnit: TemperatureUnit
 
     private var tempColor: Color {
         if isOverheating || thermals.cpuAvg >= 90.0 { return .red }
@@ -81,11 +87,11 @@ private struct ThermalsCard: View {
 
             // Big Temperature Display
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(String(format: "%.1f", thermals.cpuAvg))
+                Text(String(format: "%.1f", temperatureUnit.fromCelsius(thermals.cpuAvg)))
                     .font(.system(size: 42, weight: .bold, design: .rounded))
                     .foregroundColor(tempColor)
 
-                Text("°C")
+                Text(temperatureUnit.symbol)
                     .font(.title2)
                     .fontWeight(.medium)
                     .foregroundColor(.secondary)
@@ -99,11 +105,15 @@ private struct ThermalsCard: View {
 
             Divider()
 
-            // Sub-sensors row: Peak, Battery, SSD
-            HStack(spacing: 16) {
-                SensorMiniPill(title: "Peak Die", value: String(format: "%.1f°C", thermals.cpuPeak), icon: "flame.fill", color: .orange)
-                SensorMiniPill(title: "Battery", value: String(format: "%.1f°C", thermals.battery), icon: "battery.100.bolt", color: .blue)
-                SensorMiniPill(title: "Storage", value: String(format: "%.1f°C", thermals.storage), icon: "internaldrive", color: .purple)
+            // Sub-sensors row: Peak, GPU, Battery, SSD
+            HStack(spacing: 0) {
+                SensorMiniPill(title: "Peak Die", value: temperatureUnit.format(thermals.cpuPeak, decimals: 1), icon: "flame.fill", color: .orange)
+                Spacer(minLength: 6)
+                SensorMiniPill(title: "GPU Die", value: temperatureUnit.format(thermals.gpu, decimals: 1), icon: "sparkles.tv", color: .green)
+                Spacer(minLength: 6)
+                SensorMiniPill(title: "Battery", value: temperatureUnit.format(thermals.battery, decimals: 1), icon: "battery.100.bolt", color: .blue)
+                Spacer(minLength: 6)
+                SensorMiniPill(title: "Storage", value: temperatureUnit.format(thermals.storage, decimals: 1), icon: "internaldrive", color: .purple)
             }
         }
         .padding()
@@ -124,18 +134,21 @@ private struct SensorMiniPill: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
+            HStack(spacing: 3) {
                 Image(systemName: icon)
                     .font(.system(size: 10))
                     .foregroundColor(color)
                 Text(title)
                     .font(.caption2)
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
             Text(value)
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
                 .foregroundColor(.primary)
+                .lineLimit(1)
         }
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 

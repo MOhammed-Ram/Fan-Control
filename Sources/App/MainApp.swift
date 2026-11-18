@@ -1,44 +1,121 @@
 import AppKit
 import SwiftUI
+import UserNotifications
+import Darwin
 
 @MainActor
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate {
     var window: NSWindow?
+    var aboutWindow: NSWindow?
     var menuBarController: MenuBarController?
     let fanManager = FanManager.shared
+    let uiState = UIState()
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Setup Window
-        let contentView = ContentView(manager: fanManager)
+        // Prevent macOS "Reopen windows when logging back in" (TAL) from launching a duplicate instance alongside LaunchAgent
+        NSApp.disableRelaunchOnLogin()
+
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().delegate = self
+        }
+        let isBackgroundLaunch = CommandLine.arguments.contains("--background") ||
+            CommandLine.arguments.contains("-background") ||
+            fanManager.startMinimized
+
+        // Setup Window with Fixed Dimensions (Showing all elements without scrolling or clipping)
+        let fixedSize = NSSize(width: 860, height: 860)
+        let contentView = ContentView(manager: fanManager, uiState: uiState)
         let hostingController = NSHostingController(rootView: contentView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 860, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            contentRect: NSRect(origin: .zero, size: fixedSize),
+            styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
         window.center()
         window.title = "Mac Fan Speed Curve Controller"
+        window.titleVisibility = .visible
         window.contentViewController = hostingController
-        window.minSize = NSSize(width: 820, height: 680)
-        window.maxSize = NSSize(width: 1060, height: 920)
+        window.minSize = fixedSize
+        window.maxSize = fixedSize
         window.isReleasedWhenClosed = false
-        window.makeKeyAndOrderFront(nil)
-
+        window.isRestorable = false
+        window.delegate = self
         self.window = window
 
         // Setup Upper OS Status Bar Item with Interactive Controls
         menuBarController = MenuBarController(manager: fanManager)
         menuBarController?.onOpenWindow = { [weak self] in
             guard let self = self, let win = self.window else { return }
+            if !self.fanManager.runAsMenuBarOnly {
+                NSApp.setActivationPolicy(.regular)
+            }
             NSApp.activate(ignoringOtherApps: true)
+            win.setContentSize(fixedSize)
             win.makeKeyAndOrderFront(nil)
+            win.orderFrontRegardless()
+        }
+        menuBarController?.onOpenAbout = { [weak self] in
+            self?.showAboutWindow()
         }
 
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        // Configure Background / Menu Bar Agent Mode
+        if fanManager.runAsMenuBarOnly {
+            NSApp.setActivationPolicy(.accessory)
+        } else {
+            NSApp.setActivationPolicy(.regular)
+        }
+
+        if !isBackgroundLaunch {
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            NSApp.activate(ignoringOtherApps: true)
+        }
+
         setupMainMenu()
+    }
+
+    @objc func showAboutWindow() {
+        if let mainWin = window, mainWin.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
+            mainWin.makeKeyAndOrderFront(nil)
+            uiState.showingAbout = true
+            return
+        }
+
+        if aboutWindow == nil {
+            let aboutSize = NSSize(width: 380, height: 390)
+            let aboutView = AboutSheetView(manager: fanManager) { [weak self] in
+                self?.aboutWindow?.close()
+            }
+            let hosting = NSHostingController(rootView: aboutView)
+            let win = NSWindow(
+                contentRect: NSRect(origin: .zero, size: aboutSize),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            win.center()
+            win.title = "About Fan Control"
+            win.contentViewController = hosting
+            win.isReleasedWhenClosed = false
+            win.isRestorable = false
+            self.aboutWindow = win
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        aboutWindow?.center()
+        aboutWindow?.makeKeyAndOrderFront(nil)
+        aboutWindow?.orderFrontRegardless()
     }
 
     private func setupMainMenu() {
@@ -47,7 +124,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Application Menu
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(NSMenuItem(title: "About Fan Control", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""))
+        let aboutMenuItem = NSMenuItem(title: "About Fan Control", action: #selector(showAboutWindow), keyEquivalent: "")
+        aboutMenuItem.target = self
+        appMenu.addItem(aboutMenuItem)
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(NSMenuItem(title: "Hide Fan Control", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"))
         let hideOthers = NSMenuItem(title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
@@ -66,22 +145,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         windowMenu.addItem(closeItem)
         let miniItem = NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(miniItem)
-        let zoomItem = NSMenuItem(title: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
-        windowMenu.addItem(zoomItem)
         windowMenuItem.submenu = windowMenu
         mainMenu.addItem(windowMenuItem)
 
         NSApp.mainMenu = mainMenu
     }
 
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            window?.makeKeyAndOrderFront(nil)
+    func windowWillClose(_ notification: Notification) {
+        if fanManager.runAsMenuBarOnly {
+            NSApp.setActivationPolicy(.accessory)
         }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !fanManager.runAsMenuBarOnly {
+            NSApp.setActivationPolicy(.regular)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.setContentSize(NSSize(width: 860, height: 860))
+        window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
         return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        fanManager.stopPolling()
         if smc_is_root() {
             smc_set_all_auto()
         } else {
@@ -95,7 +183,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 @MainActor
 struct Launcher {
+    private static var instanceLockFd: Int32 = -1
+
     static func main() {
+        let isBackground = CommandLine.arguments.contains("--background") ||
+            CommandLine.arguments.contains("-background")
+
+        let lockPath = "/tmp/com.macfancontrol.curveapp.lock"
+        let fd = Darwin.open(lockPath, O_CREAT | O_RDWR, 0o666)
+        var lockAcquired = false
+        if fd >= 0 {
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                lockAcquired = true
+                instanceLockFd = fd
+            } else {
+                Darwin.close(fd)
+            }
+        }
+
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let otherApps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.macfancontrol.curveapp")
+            .filter { $0.processIdentifier != currentPID && !$0.isTerminated }
+
+        if !lockAcquired {
+            // Another v1.3.0+ instance already holds the atomic kernel lock; exit this duplicate instance
+            if !isBackground, let otherApp = otherApps.first {
+                otherApp.activate()
+            }
+            exit(0)
+        }
+
+        // We hold the exclusive lock; terminate any legacy (pre-v1.3.0) unlocked instances so only one remains
+        for legacyApp in otherApps {
+            legacyApp.terminate()
+        }
+
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

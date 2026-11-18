@@ -55,12 +55,26 @@ The app adds a live status indicator and interactive control panel directly in t
 
 ---
 
-## 🚀 Quick Start
+## 📦 Pre-Built Installers (`build/dist/`)
+
+Ready-to-install packages are included directly in the repository under [`build/dist/`](build/dist/):
+
+1. **One-Click macOS Installer (`build/dist/FanControl-Installer.pkg`)** *(Recommended)*:
+   - Installs `FanControl.app` into `/Applications`, installs and registers the privileged SMC helper daemon (`/Library/PrivilegedHelperTools/com.fancontrol.helper`), and launches the app in the Menu Bar.
+2. **Disk Image (`build/dist/FanControl.dmg`)**:
+   - Mountable disk image containing `FanControl.app`, the `Applications` drop link, and `FanControl-Installer.pkg`.
+3. **Portable Archive (`build/dist/FanControl.zip`)**:
+   - Standalone `.zip` archive of `FanControl.app`.
+
+---
+
+## 🚀 Quick Start (Build from Source)
 
 ### Build Everything
 ```bash
 make build
-# or run ./Scripts/build.sh
+# or build all distribution installers (.pkg, .dmg, .zip):
+./Scripts/package.sh
 ```
 
 ### Launch the App
@@ -141,8 +155,18 @@ Fan-Control/
 │   └── CLI/
 │       └── main.swift                # CLI utility entry point
 └── build/
-    ├── FanControl.app                # Complete signed macOS app bundle
-    └── bin/
-        ├── fan-control-helper        # Privileged helper daemon binary
-        └── fan-curve-ctl             # Standalone CLI binary
+    ├── FanControl.app                # Complete signed macOS app bundle (v1.5.0)
+    ├── bin/
+    │   ├── fan-control-helper        # Privileged helper daemon binary
+    │   └── fan-curve-ctl             # Standalone CLI binary
+    └── dist/
+        ├── FanControl-Installer.pkg  # One-click macOS PKG installer
+        ├── FanControl.dmg            # Distributable DMG disk image
+        └── FanControl.zip            # Portable ZIP archive
 ```
+
+---
+
+## 📄 License
+
+This project is open-source software licensed under the [MIT License](LICENSE).

@@ -1,7 +1,11 @@
-# Build artifacts
-build/
+# Intermediate build caches & object files (keep built app, binaries, and dist installers tracked)
+build/cache/
+build/pkg_staging/
+build/dmg_staging/
+build/*.o
+build/*.m
+build/*_raw.dmg
 .build/
-bin/
 *.o
 *.dylib
 *.a
@@ -23,3 +27,4 @@ DerivedData/
 *.err
 *~
 *.swp
+scratch/

@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 public struct CurveEditorView: View {
     @ObservedObject var manager: FanManager
@@ -16,31 +18,42 @@ public struct CurveEditorView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Header with instructions and action buttons
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Interactive Fan Speed Curve")
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                    Text("Click canvas to add control point. Drag points to adjust curve. Select and click Delete to remove.")
+            // Header with instructions, status badge, and action buttons
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text("Interactive Fan Speed Curve")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+
+                        // Mode status badge clearly showing if curve is active or not
+                        modeStatusBadge
+                    }
+
+                    Text(manager.activeMode == .curve
+                        ? "Click canvas to add point. Drag or use Arrow keys to adjust. Press Delete to remove."
+                        : "Curve is currently inactive (\(manager.activeMode.rawValue) in control). Showing live preview of profile & thermal operating point.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
                 Spacer()
 
-                if manager.activeMode == .auto {
-                    HStack(spacing: 5) {
-                        Circle().fill(Color.green).frame(width: 6, height: 6)
-                        Text("macOS Auto (Read-Only Preview)")
-                            .font(.caption2)
-                            .fontWeight(.medium)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(Color.primary.opacity(0.05)))
+                Button(action: importCurveFile) {
+                    Label("Import", systemImage: "square.and.arrow.down")
+                        .font(.caption)
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Import custom fan curve from JSON file")
+
+                Button(action: exportCurveFile) {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Export current fan curve to JSON file")
 
                 if manager.activePreset == .custom {
                     Button(action: resetToDefaults) {
@@ -87,6 +100,31 @@ public struct CurveEditorView: View {
                         drawCurve(context: context, rect: plotRect)
                     }
 
+                    // Top-right corner status watermark in plot canvas
+                    HStack(spacing: 5) {
+                        if manager.activeMode == .curve {
+                            Circle().fill(Color.blue).frame(width: 6, height: 6)
+                            Text("CURVE IN USE")
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .foregroundColor(.blue)
+                        } else {
+                            Image(systemName: "pause.circle.fill")
+                                .font(.system(size: 9))
+                                .foregroundColor(.orange)
+                            Text("CURVE NOT IN USE (\(manager.activeMode.rawValue.uppercased()))")
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule()
+                            .fill(Color(nsColor: .controlBackgroundColor).opacity(0.92))
+                            .overlay(Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                    )
+                    .position(x: max(plotRect.minX + 110, plotRect.maxX - 110), y: plotRect.minY + 16)
+
                     // 3. Live Operating Point Marker (Puck - Locked directly to curve line)
                     let drivingTemp = manager.curveDrivingTemp
                     let curvePercent = CurveEngine.evaluateOnCurve(temp: drivingTemp, points: manager.activePoints)
@@ -99,7 +137,8 @@ public struct CurveEditorView: View {
                             temp: drivingTemp,
                             percent: curvePercent,
                             rpm: manager.fans.first?.currentRPM ?? 0,
-                            activeMode: manager.activeMode
+                            activeMode: manager.activeMode,
+                            temperatureUnit: manager.temperatureUnit
                         )
                     }
 
@@ -114,7 +153,8 @@ public struct CurveEditorView: View {
                             coord: coord,
                             isSelected: isSelected,
                             isDragging: isDragging,
-                            isCustom: manager.activePreset == .custom
+                            isCustom: manager.activePreset == .custom,
+                            temperatureUnit: manager.temperatureUnit
                         )
                         .position(coord)
                         .gesture(
@@ -124,6 +164,7 @@ public struct CurveEditorView: View {
                                 }
                                 .onEnded { _ in
                                     uiState.draggingPointID = nil
+                                    manager.saveSettings()
                                 }
                         )
                         .simultaneousGesture(
@@ -138,7 +179,7 @@ public struct CurveEditorView: View {
                     handleCanvasTap(location: location, rect: plotRect)
                 }
             }
-            .frame(minHeight: 280, idealHeight: 330, maxHeight: 420)
+            .frame(minHeight: 200, maxHeight: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 12)
                     .fill(Color(nsColor: .windowBackgroundColor).opacity(0.6))
@@ -150,7 +191,7 @@ public struct CurveEditorView: View {
 
             // X and Y axis legends
             HStack {
-                Label("Horizontal: SoC Temperature (°C)", systemImage: "thermometer.medium")
+                Label("Horizontal: SoC Temperature (\(manager.temperatureUnit.symbol))", systemImage: "thermometer.medium")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 Spacer()
@@ -159,11 +200,20 @@ public struct CurveEditorView: View {
                     .foregroundColor(.secondary)
             }
         }
-        .padding()
+        .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 16)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
+        .onAppear {
+            setupKeyboardMonitor()
+        }
+        .onDisappear {
+            if let monitor = uiState.keyMonitor {
+                NSEvent.removeMonitor(monitor)
+                uiState.keyMonitor = nil
+            }
+        }
     }
 
     // MARK: - Canvas Drawing
@@ -176,7 +226,8 @@ public struct CurveEditorView: View {
             path.addLine(to: CGPoint(x: x, y: rect.maxY))
             context.stroke(path, with: .color(Color.primary.opacity(0.06)), lineWidth: 1)
 
-            let text = Text("\(Int(t))°")
+            let displayTemp = Int(manager.temperatureUnit.fromCelsius(t).rounded())
+            let text = Text("\(displayTemp)°")
                 .font(.system(size: 10, weight: .regular))
                 .foregroundColor(.secondary)
             context.draw(text, at: CGPoint(x: x, y: rect.maxY + 14), anchor: .center)
@@ -197,6 +248,77 @@ public struct CurveEditorView: View {
         }
 
         context.stroke(Path(rect), with: .color(Color.primary.opacity(0.12)), lineWidth: 1)
+    }
+
+    @ViewBuilder
+    private var modeStatusBadge: some View {
+        switch manager.activeMode {
+        case .curve:
+            HStack(spacing: 5) {
+                Circle().fill(Color.blue).frame(width: 7, height: 7)
+                Text("Active (In Control)")
+                    .font(.caption2)
+                    .fontWeight(.bold)
+                    .foregroundColor(.blue)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.blue.opacity(0.12)))
+
+        case .auto:
+            HStack(spacing: 6) {
+                Circle().fill(Color.orange).frame(width: 7, height: 7)
+                Text("Not in Use • macOS Auto Active")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.orange)
+
+                Button("Activate Curve") {
+                    withAnimation { manager.setMode(.curve) }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.orange.opacity(0.12)))
+
+        case .manual:
+            HStack(spacing: 6) {
+                Circle().fill(Color.orange).frame(width: 7, height: 7)
+                Text("Not in Use • Manual Fixed Active")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.orange)
+
+                Button("Activate Curve") {
+                    withAnimation { manager.setMode(.curve) }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.orange.opacity(0.12)))
+
+        case .turbo:
+            HStack(spacing: 6) {
+                Circle().fill(Color.red).frame(width: 7, height: 7)
+                Text("Not in Use • 100% Turbo Active")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.red)
+
+                Button("Switch to Curve") {
+                    withAnimation { manager.setMode(.curve) }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.red.opacity(0.12)))
+        }
     }
 
     private func drawCurve(context: GraphicsContext, rect: CGRect) {
@@ -221,21 +343,29 @@ public struct CurveEditorView: View {
         fillPath.addLine(to: CGPoint(x: lastPt.x, y: rect.maxY))
         fillPath.closeSubpath()
 
+        let isCurveInUse = (manager.activeMode == .curve)
+        let fillMultiplier: Double = isCurveInUse ? 1.0 : 0.40
+        let strokeAlpha: Double = isCurveInUse ? 1.0 : 0.55
+
         let gradient = Gradient(colors: [
-            Color.cyan.opacity(0.25),
-            Color.blue.opacity(0.20),
-            Color.orange.opacity(0.25),
-            Color.red.opacity(0.35)
+            Color.cyan.opacity(0.25 * fillMultiplier),
+            Color.blue.opacity(0.20 * fillMultiplier),
+            Color.orange.opacity(0.25 * fillMultiplier),
+            Color.red.opacity(0.35 * fillMultiplier)
         ])
         context.fill(fillPath, with: .linearGradient(gradient, startPoint: CGPoint(x: rect.minX, y: rect.minY), endPoint: CGPoint(x: rect.maxX, y: rect.maxY)))
 
         let strokeGradient = Gradient(colors: [
-            Color.cyan,
-            Color.blue,
-            Color.orange,
-            Color.red
+            Color.cyan.opacity(strokeAlpha),
+            Color.blue.opacity(strokeAlpha),
+            Color.orange.opacity(strokeAlpha),
+            Color.red.opacity(strokeAlpha)
         ])
-        context.stroke(curvePath, with: .linearGradient(strokeGradient, startPoint: CGPoint(x: rect.minX, y: rect.maxY), endPoint: CGPoint(x: rect.maxX, y: rect.minY)), lineWidth: 3.0)
+        context.stroke(
+            curvePath,
+            with: .linearGradient(strokeGradient, startPoint: CGPoint(x: rect.minX, y: rect.maxY), endPoint: CGPoint(x: rect.maxX, y: rect.minY)),
+            style: StrokeStyle(lineWidth: isCurveInUse ? 3.0 : 2.0, dash: isCurveInUse ? [] : [6, 4])
+        )
     }
 
     // MARK: - Coordinate Transformations
@@ -300,19 +430,115 @@ public struct CurveEditorView: View {
         manager.customPoints.append(newPoint)
         manager.customPoints.sort { $0.temp < $1.temp }
         uiState.selectedPointID = newPoint.id
+        manager.saveSettings()
         manager.applyFanControl()
     }
 
     private func deleteSelectedPoint(_ id: UUID) {
         guard manager.customPoints.count > 2 else { return }
+        if manager.activePreset != .custom {
+            manager.selectPreset(.custom)
+        }
         manager.customPoints.removeAll { $0.id == id }
         uiState.selectedPointID = nil
+        manager.saveSettings()
         manager.applyFanControl()
     }
 
     private func resetToDefaults() {
         manager.customPoints = ProfilePreset.balanced.defaultPoints
+        manager.saveSettings()
         manager.applyFanControl()
+    }
+
+    // MARK: - Keyboard Shortcuts (Delete & Arrow Keys)
+    private func setupKeyboardMonitor() {
+        guard uiState.keyMonitor == nil else { return }
+        uiState.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard !uiState.showingSettings,
+                  let selectedID = uiState.selectedPointID else {
+                return event
+            }
+
+            switch event.keyCode {
+            case 51, 117: // Delete / Forward Delete
+                if manager.customPoints.count > 2 {
+                    deleteSelectedPoint(selectedID)
+                    return nil
+                }
+            case 123: // Left Arrow (-1°C)
+                nudgeSelectedPoint(selectedID, deltaTemp: -1.0, deltaPercent: 0.0)
+                return nil
+            case 124: // Right Arrow (+1°C)
+                nudgeSelectedPoint(selectedID, deltaTemp: 1.0, deltaPercent: 0.0)
+                return nil
+            case 126: // Up Arrow (+2% fan speed)
+                nudgeSelectedPoint(selectedID, deltaTemp: 0.0, deltaPercent: 2.0)
+                return nil
+            case 125: // Down Arrow (-2% fan speed)
+                nudgeSelectedPoint(selectedID, deltaTemp: 0.0, deltaPercent: -2.0)
+                return nil
+            default:
+                break
+            }
+            return event
+        }
+    }
+
+    private func nudgeSelectedPoint(_ id: UUID, deltaTemp: Double, deltaPercent: Double) {
+        if manager.activePreset != .custom {
+            manager.selectPreset(.custom)
+        }
+        guard let idx = manager.customPoints.firstIndex(where: { $0.id == id }) else { return }
+        let minAllowedTemp = (idx > 0) ? (manager.customPoints[idx - 1].temp + 3.0) : minTemp
+        let maxAllowedTemp = (idx < manager.customPoints.count - 1) ? (manager.customPoints[idx + 1].temp - 3.0) : maxTemp
+
+        let newTemp = max(minAllowedTemp, min(maxAllowedTemp, manager.customPoints[idx].temp + deltaTemp))
+        let newPct = max(minPercent, min(maxPercent, manager.customPoints[idx].fanPercent + deltaPercent))
+
+        manager.customPoints[idx].temp = newTemp
+        manager.customPoints[idx].fanPercent = newPct
+        manager.customPoints.sort { $0.temp < $1.temp }
+        manager.saveSettings()
+        manager.applyFanControl()
+    }
+
+    // MARK: - Import / Export JSON Curve
+    private func exportCurveFile() {
+        let savePanel = NSSavePanel()
+        savePanel.title = "Export Fan Curve Profile"
+        savePanel.nameFieldStringValue = "FanCurve-\(manager.activePreset.rawValue).json"
+        savePanel.allowedContentTypes = [.json]
+        savePanel.canCreateDirectories = true
+
+        if savePanel.runModal() == .OK, let url = savePanel.url {
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let data = try encoder.encode(manager.activePoints)
+                try data.write(to: url, options: .atomic)
+                manager.statusMessage = "Exported curve to \(url.lastPathComponent)"
+            } catch {
+                manager.statusMessage = "Export failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func importCurveFile() {
+        let openPanel = NSOpenPanel()
+        openPanel.title = "Import Fan Curve Profile"
+        openPanel.allowedContentTypes = [.json]
+        openPanel.allowsMultipleSelection = false
+        openPanel.canChooseDirectories = false
+
+        if openPanel.runModal() == .OK, let url = openPanel.url {
+            do {
+                try manager.importCustomCurve(from: url)
+                manager.statusMessage = "Imported curve from \(url.lastPathComponent)"
+            } catch {
+                manager.statusMessage = "Import failed: \(error.localizedDescription)"
+            }
+        }
     }
 }
 
@@ -323,6 +549,7 @@ private struct ControlPointNode: View {
     let isSelected: Bool
     let isDragging: Bool
     let isCustom: Bool
+    let temperatureUnit: TemperatureUnit
 
     var body: some View {
         ZStack {
@@ -343,7 +570,7 @@ private struct ControlPointNode: View {
 
             if isDragging || isSelected {
                 VStack(spacing: 1) {
-                    Text("\(Int(point.temp))°C • \(Int(point.fanPercent))%")
+                    Text("\(temperatureUnit.format(point.temp, decimals: 0)) • \(Int(point.fanPercent))%")
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundColor(.white)
                         .padding(.horizontal, 6)
@@ -357,9 +584,9 @@ private struct ControlPointNode: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Fan control node at \(Int(point.temp)) degrees Celsius, \(Int(point.fanPercent)) percent speed")
-        .accessibilityValue("\(Int(point.temp))°C, \(Int(point.fanPercent))%")
-        .accessibilityHint(isCustom ? "Drag to adjust temperature or fan speed" : "Switch to Custom mode to edit this point")
+        .accessibilityLabel("Fan control node at \(temperatureUnit.format(point.temp, decimals: 0)), \(Int(point.fanPercent)) percent speed")
+        .accessibilityValue("\(temperatureUnit.format(point.temp, decimals: 0)), \(Int(point.fanPercent))%")
+        .accessibilityHint(isCustom ? "Drag or use arrow keys to adjust temperature or fan speed" : "Switch to Custom mode to edit this point")
     }
 }
 
@@ -371,8 +598,10 @@ private struct LiveMarker: View {
     let percent: Double
     let rpm: Double
     let activeMode: FanMode
+    let temperatureUnit: TemperatureUnit
 
     var body: some View {
+        let formattedTemp = temperatureUnit.format(temp, decimals: 1)
         ZStack {
             // Dashed projection lines to axes
             Path { path in
@@ -383,29 +612,40 @@ private struct LiveMarker: View {
             }
             .stroke(Color.accentColor.opacity(0.4), style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
 
+            let isCurveInUse = (activeMode == .curve)
+
             // Outer ring
             Circle()
-                .stroke(Color.orange.opacity(0.6), lineWidth: 2)
+                .stroke((isCurveInUse ? Color.orange : Color.secondary).opacity(0.6), lineWidth: 2)
                 .frame(width: 24, height: 24)
                 .position(pos)
 
             // Core live marker dot
             Circle()
-                .fill(Color.orange)
+                .fill(isCurveInUse ? Color.orange : Color.gray)
                 .frame(width: 12, height: 12)
                 .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                .shadow(color: .orange.opacity(0.8), radius: 6)
+                .shadow(color: (isCurveInUse ? Color.orange : Color.black).opacity(0.6), radius: 5)
                 .position(pos)
 
             // Live readout badge
             HStack(spacing: 4) {
-                Circle().fill(activeMode == .auto ? Color.cyan : Color.green).frame(width: 6, height: 6)
-                if activeMode == .auto {
-                    Text(String(format: "%.1f°C • %.0f RPM (macOS Auto)", temp, rpm))
+                Circle().fill(isCurveInUse ? Color.green : Color.orange).frame(width: 6, height: 6)
+                switch activeMode {
+                case .auto:
+                    Text(String(format: "%@ • %.0f RPM (macOS Auto • Inactive)", formattedTemp, rpm))
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundColor(.white)
-                } else {
-                    Text(String(format: "%.1f°C ➔ %.0f RPM (%d%%)", temp, rpm, Int(percent.rounded())))
+                case .manual:
+                    Text(String(format: "%@ • %.0f RPM (Manual Fixed • Inactive)", formattedTemp, rpm))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                case .turbo:
+                    Text(String(format: "%@ • %.0f RPM (100% Turbo • Inactive)", formattedTemp, rpm))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                case .curve:
+                    Text(String(format: "%@ ➔ %.0f RPM (%d%% Target)", formattedTemp, rpm, Int(percent.rounded())))
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundColor(.white)
                 }
@@ -415,11 +655,11 @@ private struct LiveMarker: View {
             .background(
                 Capsule()
                     .fill(Color.black.opacity(0.88))
-                    .overlay(Capsule().stroke(Color.orange.opacity(0.7), lineWidth: 1))
+                    .overlay(Capsule().stroke((isCurveInUse ? Color.orange : Color.secondary).opacity(0.7), lineWidth: 1))
             )
             .position(x: min(max(pos.x, plotRect.minX + 90), plotRect.maxX - 90), y: max(plotRect.minY + 20, pos.y - 24))
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(String(format: "Live fan operating point: %.1f degrees Celsius, %.0f RPM, %d percent target", temp, rpm, Int(percent.rounded())))
+        .accessibilityLabel(String(format: "Live fan operating point: %@, %.0f RPM, %d percent target", formattedTemp, rpm, Int(percent.rounded())))
     }
 }

@@ -146,78 +146,157 @@ public struct ManualControlPanel: View {
 
     private var minBound: Double { manager.fans.first?.minRPM ?? 1200.0 }
     private var maxBound: Double { manager.fans.first?.maxRPM ?? 7000.0 }
+    private var minBoundRight: Double { (manager.fans.count > 1 ? manager.fans[1].minRPM : nil) ?? minBound }
+    private var maxBoundRight: Double { (manager.fans.count > 1 ? manager.fans[1].maxRPM : nil) ?? maxBound }
 
     public var body: some View {
-        VStack(spacing: 16) {
-            // Speed Readout
+        VStack(spacing: 10) {
+            // Speed Readout & Quick Jumps Header
             HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Manual Target Fan Speed")
-                        .font(.headline)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(manager.linkFans || manager.fans.count < 2 ? "Manual Target Fan Speed" : "Independent Left & Right Fan Speeds")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
                         .foregroundColor(.primary)
-                    Text("Fans are commanded to hold this constant speed continuously.")
-                        .font(.caption)
+                    Text(manager.linkFans || manager.fans.count < 2
+                         ? "Fans are commanded to hold this constant speed continuously."
+                         : "Left and Right fans are controlled independently.")
+                        .font(.caption2)
                         .foregroundColor(.secondary)
                 }
 
                 Spacer()
 
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text("\(Int(manager.manualRPM))")
-                        .font(.system(size: 32, weight: .bold, design: .monospaced))
-                        .foregroundColor(.orange)
-                    Text("RPM")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.secondary)
+                if manager.linkFans || manager.fans.count < 2 {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text("\(Int(manager.manualRPM))")
+                            .font(.system(size: 24, weight: .bold, design: .monospaced))
+                            .foregroundColor(.orange)
+                        Text("RPM")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.secondary)
+                    }
+                } else {
+                    HStack(spacing: 14) {
+                        HStack(alignment: .firstTextBaseline, spacing: 3) {
+                            Text("L:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text("\(Int(manager.manualRPM))")
+                                .font(.system(size: 20, weight: .bold, design: .monospaced))
+                                .foregroundColor(.orange)
+                            Text("RPM")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        HStack(alignment: .firstTextBaseline, spacing: 3) {
+                            Text("R:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text("\(Int(manager.manualRPMRight))")
+                                .font(.system(size: 20, weight: .bold, design: .monospaced))
+                                .foregroundColor(.orange)
+                            Text("RPM")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
             }
 
-            Divider()
-
-            // Continuous Slider with Steppers
-            HStack(spacing: 14) {
-                Button(action: {
-                    manager.manualRPM = max(minBound, manager.manualRPM - 50.0)
-                    manager.applyFanControl()
-                }) {
-                    Image(systemName: "minus.circle.fill")
-                        .font(.title3)
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.plain)
-
-                VStack(spacing: 4) {
-                    Slider(
-                        value: $manager.manualRPM,
-                        in: minBound...maxBound,
-                        step: 50,
-                        onEditingChanged: { _ in
-                            manager.applyFanControl()
-                        }
-                    )
-                    .tint(.orange)
-
-                    HStack {
-                        Text("\(Int(minBound)) RPM")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("\(Int(maxBound)) RPM")
-                            .font(.caption2)
+            if manager.linkFans || manager.fans.count < 2 {
+                // Synchronized Continuous Slider with Steppers
+                HStack(spacing: 12) {
+                    Button(action: {
+                        manager.manualRPM = max(minBound, manager.manualRPM - 50.0)
+                        manager.manualRPMRight = manager.manualRPM
+                        manager.saveSettings()
+                        manager.applyFanControl()
+                    }) {
+                        Image(systemName: "minus.circle.fill")
+                            .font(.title3)
                             .foregroundColor(.secondary)
                     }
-                }
+                    .buttonStyle(.plain)
 
-                Button(action: {
-                    manager.manualRPM = min(maxBound, manager.manualRPM + 50.0)
-                    manager.applyFanControl()
-                }) {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.title3)
-                        .foregroundColor(.secondary)
+                    VStack(spacing: 3) {
+                        Slider(
+                            value: $manager.manualRPM,
+                            in: minBound...maxBound,
+                            step: 50,
+                            onEditingChanged: { editing in
+                                manager.manualRPMRight = manager.manualRPM
+                                if !editing { manager.saveSettings() }
+                                manager.applyFanControl()
+                            }
+                        )
+                        .tint(.orange)
+
+                        HStack {
+                            Text("\(Int(minBound)) RPM")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("\(Int(maxBound)) RPM")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    Button(action: {
+                        manager.manualRPM = min(maxBound, manager.manualRPM + 50.0)
+                        manager.manualRPMRight = manager.manualRPM
+                        manager.saveSettings()
+                        manager.applyFanControl()
+                    }) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title3)
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+            } else {
+                // Side-by-side Left & Right Sliders (preserves fixed window height)
+                HStack(spacing: 18) {
+                    VStack(spacing: 3) {
+                        Slider(
+                            value: $manager.manualRPM,
+                            in: minBound...maxBound,
+                            step: 50,
+                            onEditingChanged: { editing in
+                                if !editing { manager.saveSettings() }
+                                manager.applyFanControl()
+                            }
+                        )
+                        .tint(.orange)
+                        HStack {
+                            Text("Left (\(Int(minBound))–\(Int(maxBound)))")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                        }
+                    }
+
+                    VStack(spacing: 3) {
+                        Slider(
+                            value: $manager.manualRPMRight,
+                            in: minBoundRight...maxBoundRight,
+                            step: 50,
+                            onEditingChanged: { editing in
+                                if !editing { manager.saveSettings() }
+                                manager.applyFanControl()
+                            }
+                        )
+                        .tint(.orange)
+                        HStack {
+                            Text("Right (\(Int(minBoundRight))–\(Int(maxBoundRight)))")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                        }
+                    }
+                }
             }
 
             // Quick Jump Preset Pills
@@ -236,12 +315,14 @@ public struct ManualControlPanel: View {
                 ForEach(presets, id: \.label) { p in
                     Button(action: {
                         manager.manualRPM = max(minBound, min(maxBound, p.rpm))
+                        manager.manualRPMRight = max(minBoundRight, min(maxBoundRight, p.rpm))
+                        manager.saveSettings()
                         manager.applyFanControl()
                     }) {
                         Text(p.label)
                             .font(.caption)
                             .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
+                            .padding(.vertical, 4)
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
                     }
                     .buttonStyle(.plain)
@@ -250,10 +331,11 @@ public struct ManualControlPanel: View {
                 Spacer()
             }
         }
-        .padding(16)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 12)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
     }
@@ -268,18 +350,19 @@ public struct AutoStatusPanel: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 Image(systemName: "checkmark.shield.fill")
-                    .font(.system(size: 32))
+                    .font(.system(size: 24))
                     .foregroundColor(.green)
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text("macOS Firmware Managing Fan Acoustics")
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                    Text("Operating in strict read-only monitor mode. Apple Silicon firmware has exclusive, unhindered control over fan speed and thermal acoustics.")
                         .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.primary)
+                    Text("Operating in strict read-only monitor mode. Apple Silicon firmware has exclusive control.")
+                        .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
@@ -291,34 +374,33 @@ public struct AutoStatusPanel: View {
                     }
                 }) {
                     Label("Switch to Curve Control", systemImage: "waveform.path.ecg")
-                        .font(.subheadline)
+                        .font(.caption)
                         .fontWeight(.medium)
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
+                .controlSize(.small)
             }
 
-            Divider()
-
-            HStack(spacing: 20) {
+            HStack(spacing: 16) {
                 Label("Zero app interference", systemImage: "checkmark.circle")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundColor(.secondary)
                 Label("Hardware safety guaranteed", systemImage: "shield.checkered")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundColor(.secondary)
                 Label("Real-time telemetry active", systemImage: "chart.xyaxis.line")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundColor(.secondary)
             }
         }
-        .padding(18)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 12)
                 .fill(Color.green.opacity(0.07))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16)
+                    RoundedRectangle(cornerRadius: 12)
                         .stroke(Color.green.opacity(0.2), lineWidth: 1)
                 )
         )
@@ -334,17 +416,18 @@ public struct TurboStatusPanel: View {
     }
 
     public var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             Image(systemName: "bolt.fill")
-                .font(.system(size: 32))
+                .font(.system(size: 22))
                 .foregroundColor(.red)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Emergency 100% Turbo Cooling Active")
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                Text("Fans are commanded to maximum hardware RPM for emergency heat dissipation.")
                     .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.primary)
+                Text("Fans commanded to maximum hardware RPM for maximum heat dissipation.")
+                    .font(.caption)
                     .foregroundColor(.secondary)
             }
 
@@ -356,18 +439,21 @@ public struct TurboStatusPanel: View {
                 }
             }) {
                 Text("Restore macOS Auto")
+                    .font(.caption)
                     .fontWeight(.semibold)
             }
             .buttonStyle(.borderedProminent)
             .tint(.red)
+            .controlSize(.small)
         }
-        .padding(18)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 12)
                 .fill(Color.red.opacity(0.08))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16)
+                    RoundedRectangle(cornerRadius: 12)
                         .stroke(Color.red.opacity(0.25), lineWidth: 1)
                 )
         )

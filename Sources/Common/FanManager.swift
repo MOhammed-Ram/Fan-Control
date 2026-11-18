@@ -1,6 +1,9 @@
 import Foundation
 import Combine
 import AppKit
+import CoreGraphics
+import IOKit.ps
+@preconcurrency import UserNotifications
 
 @MainActor
 public final class FanManager: ObservableObject {
@@ -13,25 +16,42 @@ public final class FanManager: ObservableObject {
     @Published public var activePreset: ProfilePreset = .balanced
     @Published public var customPoints: [CurvePoint] = ProfilePreset.balanced.defaultPoints
     @Published public var manualRPM: Double = 3500.0
+    @Published public var manualRPMRight: Double = 3500.0
     @Published public var linkFans: Bool = true
     @Published public var hysteresisBand: Double = 2.0
     @Published public var criticalThreshold: Double = 100.0
     @Published public var curveTempSource: CurveTempSource = .cpuAverage
     @Published public var menuBarTempSource: MenuBarTempSource = .cpuAverage
     @Published public var menuBarLayoutStyle: MenuBarLayoutStyle = .stackedDual
+    @Published public var temperatureUnit: TemperatureUnit = .celsius
     @Published public var rampUpRate: Double = 120.0 // Max RPM acceleration per second
     @Published public var rampDownRate: Double = 60.0 // Max RPM deceleration per second
     @Published public var tempSmoothingAlpha: Double = 0.25 // EMA alpha (0.1..0.8)
     @Published public var currentCommandedPercentage: Double = 0.0
+    @Published public var runAsMenuBarOnly: Bool = true
+    @Published public var startAtLogin: Bool = false
+    @Published public var startMinimized: Bool = true
+    @Published public var isInstalledInApplications: Bool = false
+    @Published public var autoSwitchPowerProfile: Bool = false
+    @Published public var batteryPreset: ProfilePreset = .silent
+    @Published public var acPreset: ProfilePreset = .balanced
+    @Published public var isOnBattery: Bool = false
+    @Published public var enableOverheatNotifications: Bool = true
+    @Published public var enableNotificationSound: Bool = true
+    @Published public var enablePowerSwitchNotifications: Bool = false
+
     private var commandedRPMs: [Int: Double] = [:]
     private var lastTickTime: Date? = nil
     private var didRestoreAutoHardware: Bool = false
+    private var tickCounter: Int = 0
+    private var lastKnownBatteryState: Bool? = nil
 
     // Telemetry Filtering & Deadband State
     private var smoothedFanRPM: [Int: Double] = [:]
     private var lastDisplayRPM: [Int: Int] = [:]
     private var smoothedCpuAvg: Double? = nil
     private var smoothedCpuPeak: Double? = nil
+    private var smoothedGpu: Double? = nil
     private var lastDisplayIntTemp: Int? = nil
     private var overheatTriggerTicks: Int = 0
     private var overheatClearTicks: Int = 0
@@ -39,7 +59,40 @@ public final class FanManager: ObservableObject {
     @Published public var isDirectRoot: Bool = false
     @Published public var isHelperConnected: Bool = false
     @Published public var isOverheating: Bool = false
+    @Published public var isSystemSleeping: Bool = false
     @Published public var statusMessage: String = "Ready"
+    private var isDisplaySleeping: Bool = false
+    private var isSuspendedForSleepOrLid: Bool = false
+
+    private static func hasAwakeExternalDisplay() -> Bool {
+        var displayCount: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &displayCount) == .success, displayCount > 0 else {
+            return false
+        }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
+        guard CGGetActiveDisplayList(displayCount, &displays, &displayCount) == .success else {
+            return false
+        }
+        for i in 0..<Int(displayCount) {
+            let d = displays[i]
+            if CGDisplayIsBuiltin(d) == 0 && CGDisplayIsAsleep(d) == 0 {
+                return true
+            }
+        }
+        return false
+    }
+
+    public var shouldSuspendForSleepOrClamshell: Bool {
+        if isSystemSleeping {
+            return true
+        }
+        if smc_is_lid_closed() {
+            if isDisplaySleeping || smc_clamshell_causes_sleep() || !Self.hasAwakeExternalDisplay() {
+                return true
+            }
+        }
+        return false
+    }
 
     // Telemetry history for charts (last 30 data points)
     @Published public var tempHistory: [Double] = []
@@ -48,7 +101,9 @@ public final class FanManager: ObservableObject {
     public var curveDrivingTemp: Double {
         switch curveTempSource {
         case .cpuAverage: return thermals.cpuAvg
+        case .cpuAndGpuMax: return max(thermals.cpuAvg, thermals.gpu)
         case .cpuPeak: return thermals.cpuPeak
+        case .gpuDie: return thermals.gpu
         }
     }
 
@@ -56,13 +111,26 @@ public final class FanManager: ObservableObject {
         switch menuBarTempSource {
         case .cpuAverage: return thermals.cpuAvg
         case .cpuPeak: return thermals.cpuPeak
+        case .gpuDie: return thermals.gpu
         }
     }
 
+    public func formatTemp(_ celsius: Double, decimals: Int = 1) -> String {
+        return temperatureUnit.format(celsius, decimals: decimals)
+    }
+
+    public func displayTempValue(_ celsius: Double) -> Double {
+        return temperatureUnit.convert(celsius)
+    }
+
+    public var tempUnitSymbol: String {
+        return temperatureUnit.symbol
+    }
+
     public var currentDisplayIntTemp: Int {
-        let t = currentDisplayTemp
+        let t = temperatureUnit.convert(currentDisplayTemp)
         if let last = lastDisplayIntTemp {
-            // 0.6°C deadband around integer transition to prevent flip-flopping
+            // 0.6 degree deadband around integer transition to prevent flip-flopping
             if abs(t - Double(last)) >= 0.6 {
                 let next = Int(t.rounded())
                 lastDisplayIntTemp = next
@@ -84,14 +152,17 @@ public final class FanManager: ObservableObject {
     // MARK: - Internal
     private var timer: Timer?
     private let curveEngine = CurveEngine()
+    private let gpuCurveEngine = CurveEngine()
     private let helperClient = HelperClient.shared
     private var isSMCInitialized = false
 
     public init() {
         self.isDirectRoot = smc_is_root()
         loadSettings()
+        LaunchAtLoginManager.shared.cleanupDuplicateRegistrations()
         setupHardware()
         setupSleepWakeHandlers()
+        setupNotifications()
         startPolling()
     }
 
@@ -112,7 +183,75 @@ public final class FanManager: ObservableObject {
         _ = sensors_init()
         isSMCInitialized = true
         checkControlPermissions()
+        pollPowerSource()
         pollHardware()
+    }
+
+    private var lastOverheatNotificationTime: Date? = nil
+
+    private func setupNotifications() {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        if enableOverheatNotifications || enablePowerSwitchNotifications {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+        }
+    }
+
+    public func requestNotificationPermissionIfNeeded() {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
+
+    public func openSystemNotificationSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    public func sendTestNotification() {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+            Task { @MainActor in
+                let content = UNMutableNotificationContent()
+                content.title = "Fan Control Notification Test"
+                content.body = String(format: "Notifications are active. Current SoC Avg: %@.", self.formatTemp(self.thermals.cpuAvg, decimals: 1))
+                if self.enableNotificationSound {
+                    content.sound = .default
+                }
+                let req = UNNotificationRequest(identifier: "com.macfancontrol.test.\(UUID().uuidString)", content: content, trigger: nil)
+                try? await UNUserNotificationCenter.current().add(req)
+                self.statusMessage = granted ? "Test notification sent" : "Enable FanControl in macOS System Settings > Notifications"
+            }
+        }
+    }
+
+    private func sendOverheatNotification(peakTemp: Double) {
+        guard enableOverheatNotifications else { return }
+        let now = Date()
+        if let lastTime = lastOverheatNotificationTime, now.timeIntervalSince(lastTime) < 180.0 {
+            return
+        }
+        lastOverheatNotificationTime = now
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Thermal Emergency Failsafe Active"
+        content.body = String(format: "Sustained SoC temperature reached %@ — fans ramped to 100%% maximum cooling.", formatTemp(peakTemp, decimals: 0))
+        if enableNotificationSound {
+            content.sound = .default
+        }
+        let req = UNNotificationRequest(identifier: "com.macfancontrol.overheat", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+    }
+
+    private func sendPowerSwitchNotification(onBattery: Bool, preset: ProfilePreset) {
+        guard enablePowerSwitchNotifications, Bundle.main.bundleIdentifier != nil else { return }
+        let content = UNMutableNotificationContent()
+        content.title = onBattery ? "Switched to Battery Profile" : "Switched to Power Adapter Profile"
+        content.body = "Active fan curve preset automatically changed to \(preset.rawValue)."
+        if enableNotificationSound {
+            content.sound = .default
+        }
+        let req = UNNotificationRequest(identifier: "com.macfancontrol.powerswitch", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
     }
 
     public func checkControlPermissions() {
@@ -124,22 +263,75 @@ public final class FanManager: ObservableObject {
         }
     }
 
+    private func suspendFanControlForSleepOrLid() {
+        isSuspendedForSleepOrLid = true
+        commandedRPMs.removeAll()
+        curveEngine.resetSmoothing()
+        gpuCurveEngine.resetSmoothing()
+        lastTickTime = nil
+        if hasHardwareControl {
+            writeAuto()
+            usleep(15000)
+            writeAuto()
+            didRestoreAutoHardware = true
+        }
+        statusMessage = "System Sleeping (macOS Auto)"
+    }
+
+    private func resumeFromSleepIfAwake() {
+        if timer == nil {
+            startPolling()
+        }
+        if shouldSuspendForSleepOrClamshell {
+            suspendFanControlForSleepOrLid()
+            return
+        }
+        isSuspendedForSleepOrLid = false
+        didRestoreAutoHardware = false
+        checkControlPermissions()
+        pollPowerSource()
+        pollHardware()
+        applyFanControl()
+    }
+
     private func setupSleepWakeHandlers() {
         let center = NSWorkspace.shared.notificationCenter
         center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated {
                 guard let self = self else { return }
-                if self.hasHardwareControl {
-                    self.resetToAuto()
+                self.isSystemSleeping = true
+                self.suspendFanControlForSleepOrLid()
+            }
+        }
+        center.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self = self else { return }
+                self.isSystemSleeping = true
+                self.suspendFanControlForSleepOrLid()
+            }
+        }
+        center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self = self else { return }
+                self.isDisplaySleeping = true
+                if self.shouldSuspendForSleepOrClamshell {
+                    self.suspendFanControlForSleepOrLid()
                 }
             }
         }
         center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated {
                 guard let self = self else { return }
-                self.checkControlPermissions()
-                self.pollHardware()
-                self.applyFanControl()
+                self.isSystemSleeping = false
+                self.resumeFromSleepIfAwake()
+            }
+        }
+        center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self = self else { return }
+                self.isDisplaySleeping = false
+                self.isSystemSleeping = false
+                self.resumeFromSleepIfAwake()
             }
         }
     }
@@ -160,12 +352,61 @@ public final class FanManager: ObservableObject {
     }
 
     private func tick() {
-        // Periodically verify helper connectivity if not direct root
-        if !isDirectRoot {
-            self.isHelperConnected = helperClient.isConnected
+        if shouldSuspendForSleepOrClamshell {
+            if !isSuspendedForSleepOrLid || !didRestoreAutoHardware {
+                suspendFanControlForSleepOrLid()
+            }
+            return
+        }
+        if isSuspendedForSleepOrLid {
+            isSuspendedForSleepOrLid = false
+            didRestoreAutoHardware = false
+            curveEngine.resetSmoothing()
+            gpuCurveEngine.resetSmoothing()
+            lastTickTime = nil
+            checkControlPermissions()
+            pollPowerSource()
+        }
+        tickCounter += 1
+        // Verify helper connectivity & power source every 4 ticks (2.0s) instead of every 0.5s
+        // (Active fan writes also update isHelperConnected directly)
+        if tickCounter % 4 == 0 {
+            if !isDirectRoot && (activeMode == .auto || !isHelperConnected) {
+                self.isHelperConnected = helperClient.isConnected
+            }
+            pollPowerSource()
         }
         pollHardware()
         applyFanControl()
+    }
+
+    private static func checkIsOnBattery() -> Bool {
+        guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let typeCF = IOPSGetProvidingPowerSourceType(snapshot)?.takeUnretainedValue() else {
+            return false
+        }
+        let typeStr = typeCF as String
+        return typeStr == (kIOPSBatteryPowerValue as String)
+    }
+
+    private func pollPowerSource() {
+        let onBatt = Self.checkIsOnBattery()
+        let previousState = lastKnownBatteryState
+        self.isOnBattery = onBatt
+        if autoSwitchPowerProfile {
+            if previousState != onBatt {
+                lastKnownBatteryState = onBatt
+                let targetPreset = onBatt ? batteryPreset : acPreset
+                if activePreset != targetPreset {
+                    selectPreset(targetPreset)
+                    if previousState != nil {
+                        sendPowerSwitchNotification(onBattery: onBatt, preset: targetPreset)
+                    }
+                }
+            }
+        } else {
+            lastKnownBatteryState = onBatt
+        }
     }
 
     // MARK: - Hardware Reading
@@ -189,7 +430,6 @@ public final class FanManager: ObservableObject {
             }
             smoothedFanRPM[i] = smoothed
 
-            // True physical tachometer RPM (single RPM precision, matching Macs Fan Control)
             let currentDisplay = Int(smoothed.rounded())
             lastDisplayRPM[i] = currentDisplay
 
@@ -219,6 +459,7 @@ public final class FanManager: ObservableObject {
 
         let rawAvg = Double(smc_get_cpu_core_avg())
         let rawPeak = Double(smc_get_cpu_core_peak())
+        let rawGpu = Double(smc_get_gpu_temp())
         let battery = Double(sensors_get_battery_temp())
         let storage = Double(sensors_get_storage_temp())
         let thermalState = ProcessInfo.processInfo.thermalState
@@ -241,11 +482,21 @@ public final class FanManager: ObservableObject {
         }
         smoothedCpuPeak = smoothPeak
 
+        let smoothGpu: Double
+        if let prev = smoothedGpu {
+            smoothGpu = (alpha * rawGpu) + ((1.0 - alpha) * prev)
+        } else {
+            smoothGpu = rawGpu
+        }
+        smoothedGpu = smoothGpu
+
         self.thermals = ThermalData(
             cpuAvg: smoothAvg,
             cpuPeak: smoothPeak,
+            gpu: smoothGpu,
             rawCpuAvg: rawAvg,
             rawCpuPeak: rawPeak,
+            rawGpu: rawGpu,
             battery: battery,
             storage: storage,
             thermalPressure: thermalState
@@ -259,18 +510,19 @@ public final class FanManager: ObservableObject {
         if fanHistory.count > 30 { fanHistory.removeFirst() }
 
         // Thermal Overheat Safety Evaluation
-        // On Apple Silicon, peak junction temperatures spike to ~95-100°C for milliseconds.
-        // True thermal emergency requires sustained extreme temperatures.
+        // Requires sustained high bulk SoC temperature (prevents false alerts from brief single-core Turbo Boost spikes)
+        let isBulkHot = (smoothAvg >= 95.0 || smoothGpu >= 98.0) ||
+            (rawPeak >= criticalThreshold && smoothPeak >= criticalThreshold && smoothAvg >= (criticalThreshold - 10.0))
+
         let isEmergencyCandidate: Bool
-        if smoothAvg >= 95.0 {
-            // Bulk SoC average is dangerously high
-            isEmergencyCandidate = true
-        } else if rawPeak >= criticalThreshold && smoothPeak >= criticalThreshold {
-            // Sustained peak core temperature above critical threshold
+        if isBulkHot && thermalState != .nominal {
             overheatTriggerTicks += 1
-            isEmergencyCandidate = (overheatTriggerTicks >= 4) // Sustained for >= 2.0s (4 ticks at 0.5s)
+            isEmergencyCandidate = (overheatTriggerTicks >= 8) // Sustained for >= 4.0s (8 ticks at 0.5s)
+        } else if smoothAvg >= criticalThreshold {
+            overheatTriggerTicks += 1
+            isEmergencyCandidate = (overheatTriggerTicks >= 6) // Sustained bulk average >= criticalThreshold for 3.0s
         } else {
-            overheatTriggerTicks = max(0, overheatTriggerTicks - 1)
+            overheatTriggerTicks = max(0, overheatTriggerTicks - 2)
             isEmergencyCandidate = false
         }
 
@@ -280,20 +532,19 @@ public final class FanManager: ObservableObject {
                 overheatClearTicks = 0
                 if activeMode != .auto {
                     statusMessage = "⚠️ CRITICAL TEMP: Overheat Failsafe Engaged"
+                    sendOverheatNotification(peakTemp: max(smoothAvg, smoothGpu))
                 }
             }
         } else {
-            // Overheat Hysteresis Release Guard:
-            // Only release emergency state when temps cool significantly below threshold:
-            // Bulk average must be below 84°C AND peak must be below (criticalThreshold - 8°C)
-            let safeAvg = smoothAvg < 84.0
-            let safePeak = smoothPeak < (criticalThreshold - 8.0)
-            if safeAvg && safePeak {
+            let safeAvg = smoothAvg < 86.0 && smoothGpu < 86.0
+            let safePeak = smoothPeak < (criticalThreshold - 6.0)
+            if (safeAvg && safePeak) || thermalState == .nominal {
                 overheatClearTicks += 1
-                if overheatClearTicks >= 4 { // Sustained cool for >= 2.0s
+                if overheatClearTicks >= 3 { // Sustained cool for >= 1.5s
                     isOverheating = false
                     overheatClearTicks = 0
                     overheatTriggerTicks = 0
+                    commandedRPMs.removeAll()
                     if activeMode != .auto {
                         statusMessage = "Thermal state normalized"
                     }
@@ -306,6 +557,12 @@ public final class FanManager: ObservableObject {
 
     // MARK: - Active Control Loop
     public func applyFanControl() {
+        if shouldSuspendForSleepOrClamshell {
+            if !isSuspendedForSleepOrLid || !didRestoreAutoHardware {
+                suspendFanControlForSleepOrLid()
+            }
+            return
+        }
         guard !fans.isEmpty else { return }
 
         // STRICT GUARANTEE: In macOS Auto mode, the app must NEVER influence fan speed.
@@ -316,6 +573,7 @@ public final class FanManager: ObservableObject {
             statusMessage = "macOS Firmware Controlling Fans"
             commandedRPMs.removeAll()
             curveEngine.resetSmoothing()
+            gpuCurveEngine.resetSmoothing()
             lastTickTime = nil
             if hasHardwareControl && !didRestoreAutoHardware {
                 writeAuto()
@@ -324,7 +582,6 @@ public final class FanManager: ObservableObject {
             return
         }
 
-        // Compute elapsed time dt for precise slew-rate integration
         let now = Date()
         let dt: Double
         if let last = lastTickTime {
@@ -341,6 +598,7 @@ public final class FanManager: ObservableObject {
         if isOverheating {
             currentCommandedPercentage = 100.0
             if hasHardwareControl {
+                var batchRPMs: [Double] = []
                 for fan in fans {
                     let current = commandedRPMs[fan.index] ?? fan.currentRPM
                     let nextRPM = CurveEngine.slewLimit(
@@ -350,8 +608,9 @@ public final class FanManager: ObservableObject {
                         maxDecrease: maxDec
                     )
                     commandedRPMs[fan.index] = nextRPM
-                    writeFanSpeed(index: fan.index, rpm: nextRPM)
+                    batchRPMs.append(nextRPM)
                 }
+                writeAllFanSpeeds(rpms: batchRPMs)
             }
             return
         }
@@ -364,21 +623,29 @@ public final class FanManager: ObservableObject {
             currentCommandedPercentage = 100.0
             statusMessage = "100% Full Blast Max Cooling"
             if hasHardwareControl {
+                var batchRPMs: [Double] = []
                 for fan in fans {
                     commandedRPMs[fan.index] = fan.maxRPM
-                    writeFanSpeed(index: fan.index, rpm: fan.maxRPM)
+                    batchRPMs.append(fan.maxRPM)
                 }
+                writeAllFanSpeeds(rpms: batchRPMs)
             }
 
         case .manual:
             let pct = fans.first.map { f in
                 f.maxRPM > f.minRPM ? ((manualRPM - f.minRPM) / (f.maxRPM - f.minRPM)) * 100.0 : 50.0
             } ?? 50.0
-            currentCommandedPercentage = pct
-            statusMessage = "Manual Target: \(Int(manualRPM)) RPM"
+            currentCommandedPercentage = max(0.0, min(100.0, pct))
+            if linkFans || fans.count < 2 {
+                statusMessage = "Manual Target: \(Int(manualRPM)) RPM"
+            } else {
+                statusMessage = "Manual L: \(Int(manualRPM)) • R: \(Int(manualRPMRight)) RPM"
+            }
             if hasHardwareControl {
+                var batchRPMs: [Double] = []
                 for fan in fans {
-                    let clamped = max(fan.minRPM, min(fan.maxRPM, manualRPM))
+                    let requestedRPM = (!linkFans && fan.index == 1) ? manualRPMRight : manualRPM
+                    let clamped = max(fan.minRPM, min(fan.maxRPM, requestedRPM))
                     let current = commandedRPMs[fan.index] ?? fan.currentRPM
                     let nextRPM = CurveEngine.slewLimit(
                         current: current,
@@ -387,8 +654,9 @@ public final class FanManager: ObservableObject {
                         maxDecrease: maxDec
                     )
                     commandedRPMs[fan.index] = nextRPM
-                    writeFanSpeed(index: fan.index, rpm: nextRPM)
+                    batchRPMs.append(nextRPM)
                 }
+                writeAllFanSpeeds(rpms: batchRPMs)
             }
 
         case .curve:
@@ -396,51 +664,65 @@ public final class FanManager: ObservableObject {
             curveEngine.criticalThreshold = criticalThreshold
             curveEngine.emaAlpha = tempSmoothingAlpha
 
+            gpuCurveEngine.hysteresisBand = hysteresisBand
+            gpuCurveEngine.criticalThreshold = criticalThreshold
+            gpuCurveEngine.emaAlpha = tempSmoothingAlpha
+
             let drivingTemp = curveDrivingTemp
             let smoothedTemp = curveEngine.smoothTemperature(drivingTemp)
-            let targetPercent = curveEngine.evaluate(temp: smoothedTemp, points: activePoints, useHysteresis: true)
+            let primaryTargetPercent = curveEngine.evaluate(temp: smoothedTemp, points: activePoints, useHysteresis: true)
 
+            let gpuDrivingTemp = max(thermals.gpu, thermals.cpuAvg * 0.85)
+            let smoothedGpuTemp = gpuCurveEngine.smoothTemperature(gpuDrivingTemp)
+            let secondaryTargetPercent = gpuCurveEngine.evaluate(temp: smoothedGpuTemp, points: activePoints, useHysteresis: true)
+
+            var batchRPMs: [Double] = []
+            var primaryCurveTargetRPM: Double = 0.0
             for fan in fans {
-                let targetRPM = curveEngine.percentToRPM(percent: targetPercent, minRPM: fan.minRPM, maxRPM: fan.maxRPM)
+                let fanPercent = (!linkFans && fan.index == 1) ? secondaryTargetPercent : primaryTargetPercent
+                let targetRPM = curveEngine.percentToRPM(percent: fanPercent, minRPM: fan.minRPM, maxRPM: fan.maxRPM)
+                if fan.index == 0 { primaryCurveTargetRPM = targetRPM }
                 let current = commandedRPMs[fan.index] ?? fan.currentRPM
+                let gap = current - targetRPM
+                let effectiveDec = (gap > 600.0) ? max(maxDec, gap * 0.22) : maxDec
                 let nextRPM = CurveEngine.slewLimit(
                     current: current,
                     target: targetRPM,
                     maxIncrease: maxInc,
-                    maxDecrease: maxDec
+                    maxDecrease: effectiveDec
                 )
                 commandedRPMs[fan.index] = nextRPM
+                batchRPMs.append(nextRPM)
+            }
 
-                if hasHardwareControl {
-                    writeFanSpeed(index: fan.index, rpm: nextRPM)
+            if hasHardwareControl {
+                writeAllFanSpeeds(rpms: batchRPMs)
+            }
+
+            currentCommandedPercentage = max(0.0, min(100.0, primaryTargetPercent))
+
+            let firstCommanded = primaryCurveTargetRPM > 0 ? primaryCurveTargetRPM : (commandedRPMs[0] ?? (fans.first?.currentRPM ?? 0))
+            if hasHardwareControl {
+                if !linkFans && fans.count >= 2, let secondCommanded = commandedRPMs[1] {
+                    statusMessage = String(format: "Split Curve: %@ • L: %.0f / R: %.0f RPM", formatTemp(drivingTemp, decimals: 1), firstCommanded, secondCommanded)
+                } else {
+                    statusMessage = String(format: "Curve Active: %@ (%.0f%%) • Target: %.0f RPM", formatTemp(drivingTemp, decimals: 1), primaryTargetPercent, firstCommanded)
                 }
-            }
-
-            // Sync currentCommandedPercentage continuously with the slewed fan RPM to eliminate step jumps in UI
-            if let firstFan = fans.first, let firstCommanded = commandedRPMs[firstFan.index] {
-                let pct = firstFan.maxRPM > firstFan.minRPM ?
-                    ((firstCommanded - firstFan.minRPM) / (firstFan.maxRPM - firstFan.minRPM)) * 100.0 : targetPercent
-                currentCommandedPercentage = max(0.0, min(100.0, pct))
             } else {
-                currentCommandedPercentage = targetPercent
+                statusMessage = "Curve Simulation (Install Helper for Control)"
             }
-
-            let firstCommanded = commandedRPMs.values.first ?? (fans.first?.currentRPM ?? 0)
-            statusMessage = hasHardwareControl ?
-                String(format: "Curve Active: %.1f°C (%.0f%%) • Target: %.0f RPM", drivingTemp, currentCommandedPercentage, firstCommanded) :
-                "Curve Simulation (Install Helper for Control)"
         }
     }
 
-    private func writeFanSpeed(index: Int, rpm: Double) {
-        guard activeMode != .auto else {
-            // Absolute prohibition: never write fan speed targets in macOS auto mode
-            return
-        }
+    private func writeAllFanSpeeds(rpms: [Double]) {
+        guard activeMode != .auto, !rpms.isEmpty else { return }
         if isDirectRoot {
-            _ = smc_set_fan_target(Int32(index), Float(rpm))
+            for (idx, rpm) in rpms.enumerated() {
+                _ = smc_set_fan_target(Int32(idx), Float(rpm))
+            }
         } else if isHelperConnected {
-            _ = helperClient.setFan(index: index, rpm: rpm)
+            let ok = helperClient.setAllFans(rpms: rpms)
+            self.isHelperConnected = ok
         }
     }
 
@@ -460,6 +742,26 @@ public final class FanManager: ObservableObject {
         return activePreset.defaultPoints
     }
 
+    // MARK: - Custom Curve Import / Export
+    public func exportCustomCurve(to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(activePoints)
+        try data.write(to: url, options: .atomic)
+    }
+
+    public func importCustomCurve(from url: URL) throws {
+        let data = try Data(contentsOf: url)
+        let decoded = try JSONDecoder().decode([CurvePoint].self, from: data)
+        guard decoded.count >= 2 else {
+            throw NSError(domain: "FanControl", code: 1, userInfo: [NSLocalizedDescriptionKey: "Curve profile must contain at least 2 control points."])
+        }
+        self.customPoints = decoded.sorted { $0.temp < $1.temp }
+        self.activePreset = .custom
+        saveSettings()
+        applyFanControl()
+    }
+
     // MARK: - Presets & Modes
     public func selectPreset(_ preset: ProfilePreset) {
         self.activePreset = preset
@@ -474,7 +776,6 @@ public final class FanManager: ObservableObject {
         if mode == .auto {
             self.didRestoreAutoHardware = false
         } else {
-            // Seed commandedRPMs with current physical fan speeds so slewing starts smoothly without steps
             for fan in fans {
                 if commandedRPMs[fan.index] == nil {
                     commandedRPMs[fan.index] = fan.currentRPM
@@ -496,9 +797,18 @@ public final class FanManager: ObservableObject {
 
     // MARK: - One-Click Privileged Helper Installer
     public func installPrivilegedHelper() {
-        let scriptPath = Bundle.main.bundlePath + "/Contents/Resources/install-helper.sh"
-        let fallbackPath = "/Users/mohamedram/Fan-Control/Scripts/install-helper.sh"
-        let targetScript = FileManager.default.fileExists(atPath: scriptPath) ? scriptPath : fallbackPath
+        let bundleScript = Bundle.main.bundlePath + "/Contents/Resources/install-helper.sh"
+        let cwdScript = FileManager.default.currentDirectoryPath + "/Scripts/install-helper.sh"
+        let appScript = "/Applications/FanControl.app/Contents/Resources/install-helper.sh"
+
+        let targetScript: String
+        if FileManager.default.fileExists(atPath: bundleScript) {
+            targetScript = bundleScript
+        } else if FileManager.default.fileExists(atPath: cwdScript) {
+            targetScript = cwdScript
+        } else {
+            targetScript = appScript
+        }
 
         let appleScriptSource = "do shell script \"bash '\(targetScript)'\" with administrator privileges"
         var error: NSDictionary?
@@ -509,7 +819,6 @@ public final class FanManager: ObservableObject {
                 self.statusMessage = "Helper Install: \(msg)"
                 print("Helper installation failed: \(msg)")
             } else {
-                // Wait briefly for daemon to initialize
                 for _ in 0..<10 {
                     usleep(200000)
                     if HelperClient.shared.ping() {
@@ -523,19 +832,97 @@ public final class FanManager: ObservableObject {
         }
     }
 
+    public func updateInstallationStatus() {
+        self.isInstalledInApplications = Bundle.main.bundlePath.hasPrefix("/Applications/")
+        self.startAtLogin = LaunchAtLoginManager.shared.isEnabled
+    }
+
+    public func setRunAsMenuBarOnly(_ enabled: Bool) {
+        self.runAsMenuBarOnly = enabled
+        UserDefaults.standard.set(enabled, forKey: "RunAsMenuBarOnly")
+        if enabled {
+            NSApp.setActivationPolicy(.accessory)
+        } else {
+            NSApp.setActivationPolicy(.regular)
+        }
+    }
+
+    public func setStartAtLogin(_ enabled: Bool) {
+        self.startAtLogin = enabled
+        LaunchAtLoginManager.shared.setEnabled(enabled)
+    }
+
+    public func setStartMinimized(_ enabled: Bool) {
+        self.startMinimized = enabled
+        UserDefaults.standard.set(enabled, forKey: "StartMinimized")
+    }
+
+    @discardableResult
+    public func installToApplications() -> Bool {
+        let currentPath = Bundle.main.bundlePath
+        let targetPath = "/Applications/FanControl.app"
+
+        if currentPath == targetPath {
+            self.isInstalledInApplications = true
+            return true
+        }
+
+        let fileManager = FileManager.default
+        do {
+            if fileManager.fileExists(atPath: targetPath) {
+                try fileManager.removeItem(atPath: targetPath)
+            }
+            try fileManager.copyItem(atPath: currentPath, toPath: targetPath)
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            process.arguments = [targetPath]
+            try process.run()
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                NSApp.terminate(nil)
+            }
+            return true
+        } catch {
+            let scriptSource = "do shell script \"rm -rf '\(targetPath)'; cp -R '\(currentPath)' '\(targetPath)'; open '\(targetPath)'\" with administrator privileges"
+            var scriptError: NSDictionary?
+            if let script = NSAppleScript(source: scriptSource) {
+                script.executeAndReturnError(&scriptError)
+                if scriptError == nil {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        NSApp.terminate(nil)
+                    }
+                    return true
+                }
+            }
+            return false
+        }
+    }
+
     // MARK: - Persistence
-    private func saveSettings() {
+    public func saveSettings() {
         UserDefaults.standard.set(activeMode.rawValue, forKey: "ActiveMode")
         UserDefaults.standard.set(activePreset.rawValue, forKey: "ActivePreset")
         UserDefaults.standard.set(manualRPM, forKey: "ManualRPM")
+        UserDefaults.standard.set(manualRPMRight, forKey: "ManualRPMRight")
         UserDefaults.standard.set(linkFans, forKey: "LinkFans")
         UserDefaults.standard.set(hysteresisBand, forKey: "HysteresisBand")
         UserDefaults.standard.set(criticalThreshold, forKey: "CriticalThreshold")
         UserDefaults.standard.set(curveTempSource.rawValue, forKey: "CurveTempSource")
         UserDefaults.standard.set(menuBarTempSource.rawValue, forKey: "MenuBarTempSource")
+        UserDefaults.standard.set(menuBarLayoutStyle.rawValue, forKey: "MenuBarLayoutStyle")
+        UserDefaults.standard.set(temperatureUnit.rawValue, forKey: "TemperatureUnit")
         UserDefaults.standard.set(rampUpRate, forKey: "RampUpRate")
         UserDefaults.standard.set(rampDownRate, forKey: "RampDownRate")
         UserDefaults.standard.set(tempSmoothingAlpha, forKey: "TempSmoothingAlpha")
+        UserDefaults.standard.set(runAsMenuBarOnly, forKey: "RunAsMenuBarOnly")
+        UserDefaults.standard.set(startMinimized, forKey: "StartMinimized")
+        UserDefaults.standard.set(autoSwitchPowerProfile, forKey: "AutoSwitchPowerProfile")
+        UserDefaults.standard.set(batteryPreset.rawValue, forKey: "BatteryPreset")
+        UserDefaults.standard.set(acPreset.rawValue, forKey: "ACPreset")
+        UserDefaults.standard.set(enableOverheatNotifications, forKey: "EnableOverheatNotifications")
+        UserDefaults.standard.set(enableNotificationSound, forKey: "EnableNotificationSound")
+        UserDefaults.standard.set(enablePowerSwitchNotifications, forKey: "EnablePowerSwitchNotifications")
 
         if let encoded = try? JSONEncoder().encode(customPoints) {
             UserDefaults.standard.set(encoded, forKey: "CustomPoints")
@@ -571,6 +958,49 @@ public final class FanManager: ObservableObject {
             self.menuBarLayoutStyle = layout
         }
 
+        if let unitStr = UserDefaults.standard.string(forKey: "TemperatureUnit"),
+           let unit = TemperatureUnit(rawValue: unitStr) {
+            self.temperatureUnit = unit
+        }
+
+        if UserDefaults.standard.object(forKey: "LinkFans") != nil {
+            self.linkFans = UserDefaults.standard.bool(forKey: "LinkFans")
+        } else {
+            self.linkFans = true
+        }
+
+        if UserDefaults.standard.object(forKey: "AutoSwitchPowerProfile") != nil {
+            self.autoSwitchPowerProfile = UserDefaults.standard.bool(forKey: "AutoSwitchPowerProfile")
+        }
+
+        if UserDefaults.standard.object(forKey: "EnableOverheatNotifications") != nil {
+            self.enableOverheatNotifications = UserDefaults.standard.bool(forKey: "EnableOverheatNotifications")
+        } else {
+            self.enableOverheatNotifications = true
+        }
+
+        if UserDefaults.standard.object(forKey: "EnableNotificationSound") != nil {
+            self.enableNotificationSound = UserDefaults.standard.bool(forKey: "EnableNotificationSound")
+        } else {
+            self.enableNotificationSound = true
+        }
+
+        if UserDefaults.standard.object(forKey: "EnablePowerSwitchNotifications") != nil {
+            self.enablePowerSwitchNotifications = UserDefaults.standard.bool(forKey: "EnablePowerSwitchNotifications")
+        } else {
+            self.enablePowerSwitchNotifications = false
+        }
+
+        if let battStr = UserDefaults.standard.string(forKey: "BatteryPreset"),
+           let battP = ProfilePreset(rawValue: battStr) {
+            self.batteryPreset = battP
+        }
+
+        if let acStr = UserDefaults.standard.string(forKey: "ACPreset"),
+           let acP = ProfilePreset(rawValue: acStr) {
+            self.acPreset = acP
+        }
+
         let savedUp = UserDefaults.standard.double(forKey: "RampUpRate")
         if savedUp >= 20.0 { self.rampUpRate = savedUp }
 
@@ -582,6 +1012,13 @@ public final class FanManager: ObservableObject {
 
         let savedRPM = UserDefaults.standard.double(forKey: "ManualRPM")
         if savedRPM > 1000 { self.manualRPM = savedRPM }
+
+        let savedRPMRight = UserDefaults.standard.double(forKey: "ManualRPMRight")
+        if savedRPMRight > 1000 {
+            self.manualRPMRight = savedRPMRight
+        } else {
+            self.manualRPMRight = self.manualRPM
+        }
 
         if let data = UserDefaults.standard.data(forKey: "CustomPoints"),
            let decoded = try? JSONDecoder().decode([CurvePoint].self, from: data) {
@@ -595,10 +1032,21 @@ public final class FanManager: ObservableObject {
 
         let savedCrit = UserDefaults.standard.double(forKey: "CriticalThreshold")
         if savedCrit > 70.0 {
-            // Migrate legacy default 95.0 to Apple Silicon safe 100.0
             self.criticalThreshold = (savedCrit == 95.0) ? 100.0 : savedCrit
         } else {
             self.criticalThreshold = 100.0
         }
+
+        if UserDefaults.standard.object(forKey: "RunAsMenuBarOnly") != nil {
+            self.runAsMenuBarOnly = UserDefaults.standard.bool(forKey: "RunAsMenuBarOnly")
+        } else {
+            self.runAsMenuBarOnly = true
+        }
+        if UserDefaults.standard.object(forKey: "StartMinimized") != nil {
+            self.startMinimized = UserDefaults.standard.bool(forKey: "StartMinimized")
+        } else {
+            self.startMinimized = true
+        }
+        updateInstallationStatus()
     }
 }
