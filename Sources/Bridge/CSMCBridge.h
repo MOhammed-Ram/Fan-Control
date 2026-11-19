@@ -33,6 +33,7 @@ float sensors_get_cpu_avg(void);
 float sensors_get_cpu_max(void);
 float smc_get_cpu_core_peak(void);
 float smc_get_cpu_core_avg(void);
+void smc_get_cpu_core_temps(float *avgOut, float *peakOut);
 float smc_get_gpu_temp(void);
 float sensors_get_battery_temp(void);
 float sensors_get_storage_temp(void);

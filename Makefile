@@ -1,4 +1,4 @@
-.PHONY: all build cli app run clean status auto turbo test helper install-helper uninstall-helper
+.PHONY: all build cli app run clean status auto turbo test test-unit helper install-helper uninstall-helper
 
 all: build
 
@@ -21,8 +21,11 @@ auto:
 turbo:
 	@./build/bin/fan-curve-ctl turbo
 
-test:
+test: test-unit
 	@./build/bin/fan-curve-ctl status
+
+test-unit:
+	@./Scripts/test.sh
 
 install-helper: build
 	@sudo ./Scripts/install-helper.sh

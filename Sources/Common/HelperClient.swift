@@ -17,6 +17,9 @@ public final class HelperClient: @unchecked Sendable {
             let fd = socket(AF_UNIX, SOCK_STREAM, 0)
             if fd < 0 { continue }
 
+            var noSigPipe: Int32 = 1
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+
             var addr = sockaddr_un()
             addr.sun_family = sa_family_t(AF_UNIX)
 

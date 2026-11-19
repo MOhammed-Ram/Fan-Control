@@ -613,11 +613,11 @@ public struct SettingsSheetView: View {
 
 public enum AppVersionInfo {
     public static var shortVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.6.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.7.0"
     }
 
     public static var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "7"
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "8"
     }
 
     public static var formattedVersion: String {

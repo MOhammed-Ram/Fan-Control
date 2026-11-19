@@ -19,6 +19,7 @@ public final class MenuBarController: NSObject {
     // Hardware-calibrated ProMotion (120Hz / 60Hz) animation timer via DispatchSourceTimer
     private var animationTimer: DispatchSourceTimer?
     private var currentTargetFPS: Int = 0
+    private var animationTickCount: UInt = 0
     private var lastTimestamp: CFTimeInterval = 0.0
     private var currentAngle: Double = 0.0
     private var angularVelocity: Double = 120.0
@@ -248,11 +249,10 @@ public final class MenuBarController: NSObject {
             return
         }
         guard let button = statusItem?.button else { return }
-        if manager.menuBarLayoutStyle == .tempOnly || manager.menuBarLayoutStyle == .rpmOnly {
-            // Even when showing text-only or leading image, ensure refresh rate matches screen
-        }
-        let screenFPS = effectiveDisplayFPS()
-        if screenFPS != currentTargetFPS {
+
+        // Periodic fallback (~once/sec at 120Hz) in case the status item moved displays without a screen-parameter notification.
+        animationTickCount = animationTickCount &+ 1
+        if animationTickCount % 120 == 0 {
             configureAnimationTimerForScreen()
         }
 

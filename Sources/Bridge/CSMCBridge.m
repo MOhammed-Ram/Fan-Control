@@ -254,6 +254,7 @@ float smc_get_fan_rpm(int fan) {
 }
 
 float smc_get_fan_min_rpm(int fan) {
+    if (fan < 0 || fan >= MAX_SMC_FANS) return 0.0f;
     if (!gSMCConn && smc_open() != 0) return 1200.0f;
     char key[5];
     snprintf(key, sizeof(key), "F%dMn", fan);
@@ -275,6 +276,7 @@ float smc_get_fan_min_rpm(int fan) {
 }
 
 float smc_get_fan_max_rpm(int fan) {
+    if (fan < 0 || fan >= MAX_SMC_FANS) return 0.0f;
     if (!gSMCConn && smc_open() != 0) return 6500.0f;
     char key[5];
     snprintf(key, sizeof(key), "F%dMx", fan);
@@ -296,6 +298,7 @@ float smc_get_fan_max_rpm(int fan) {
 }
 
 float smc_get_fan_target_rpm(int fan) {
+    if (fan < 0 || fan >= MAX_SMC_FANS) return 0.0f;
     if (!gSMCConn && smc_open() != 0) return 0.0f;
     char key[5];
     snprintf(key, sizeof(key), "F%dTg", fan);
@@ -317,6 +320,7 @@ float smc_get_fan_target_rpm(int fan) {
 }
 
 int smc_get_fan_mode(int fan) {
+    if (fan < 0 || fan >= MAX_SMC_FANS) return -1;
     if (!gSMCConn && smc_open() != 0) return 0;
     char key[5];
     snprintf(key, sizeof(key), "F%dmd", fan);
@@ -337,6 +341,7 @@ bool smc_is_root(void) {
 }
 
 int smc_set_fan_target(int fan, float rpm) {
+    if (fan < 0 || fan >= MAX_SMC_FANS) return -1;
     if (!smc_is_root()) return -2;
 
     // 1. Set mode to 1 (manual mode)
@@ -368,6 +373,7 @@ int smc_set_fan_target(int fan, float rpm) {
 }
 
 int smc_set_fan_auto(int fan) {
+    if (fan < 0 || fan >= MAX_SMC_FANS) return -1;
     if (!smc_is_root()) return -2;
 
     char keyMode[5];
@@ -385,6 +391,7 @@ int smc_set_all_auto(void) {
     if (!smc_is_root()) return -2;
 
     int count = smc_get_fan_count();
+    if (count > MAX_SMC_FANS) count = MAX_SMC_FANS;
     for (int i = 0; i < count; i++) {
         smc_set_fan_auto(i);
     }
@@ -431,20 +438,22 @@ int sensors_init(void) {
     for (CFIndex i = 0; i < count; i++) {
         IOHIDServiceClientRef service = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(gHIDServices, i);
         CFTypeRef prop = IOHIDServiceClientCopyProperty(service, CFSTR("Product"));
-        if (prop && CFGetTypeID(prop) == CFStringGetTypeID()) {
-            char name[64] = {0};
-            CFStringGetCString((CFStringRef)prop, name, sizeof(name), kCFStringEncodingUTF8);
-            CFRelease(prop);
+        if (prop) {
+            if (CFGetTypeID(prop) == CFStringGetTypeID()) {
+                char name[64] = {0};
+                CFStringGetCString((CFStringRef)prop, name, sizeof(name), kCFStringEncodingUTF8);
 
-            if ((strstr(name, "GPU") != NULL || strstr(name, "gpu") != NULL) && sGpuServiceCount < 32) {
-                sGpuServices[sGpuServiceCount++] = service;
-            } else if (strstr(name, "tdie") != NULL && sCpuServiceCount < 64) {
-                sCpuServices[sCpuServiceCount++] = service;
-            } else if (!sBatteryService && (strstr(name, "battery") != NULL || strstr(name, "gas gauge") != NULL)) {
-                sBatteryService = service;
-            } else if (!sStorageService && (strstr(name, "NAND") != NULL || strstr(name, "SSD") != NULL)) {
-                sStorageService = service;
+                if ((strstr(name, "GPU") != NULL || strstr(name, "gpu") != NULL) && sGpuServiceCount < 32) {
+                    sGpuServices[sGpuServiceCount++] = service;
+                } else if (strstr(name, "tdie") != NULL && sCpuServiceCount < 64) {
+                    sCpuServices[sCpuServiceCount++] = service;
+                } else if (!sBatteryService && (strstr(name, "battery") != NULL || strstr(name, "gas gauge") != NULL)) {
+                    sBatteryService = service;
+                } else if (!sStorageService && (strstr(name, "NAND") != NULL || strstr(name, "SSD") != NULL)) {
+                    sStorageService = service;
+                }
             }
+            CFRelease(prop);
         }
     }
     sSensorsCategorized = true;
@@ -488,8 +497,10 @@ bool sensors_get_info(int index, char *nameBuf, int maxLen, float *tempOut) {
     if (nameBuf && maxLen > 0) {
         nameBuf[0] = '\0';
         CFTypeRef prop = IOHIDServiceClientCopyProperty(service, CFSTR("Product"));
-        if (prop && CFGetTypeID(prop) == CFStringGetTypeID()) {
-            CFStringGetCString((CFStringRef)prop, nameBuf, maxLen, kCFStringEncodingUTF8);
+        if (prop) {
+            if (CFGetTypeID(prop) == CFStringGetTypeID()) {
+                CFStringGetCString((CFStringRef)prop, nameBuf, maxLen, kCFStringEncodingUTF8);
+            }
             CFRelease(prop);
         }
     }
@@ -583,9 +594,9 @@ static const char *kCandidateGpuKeys[] = {
     "Tg0n", "Tg0r", "Tg0v", "Tg0y", "Tg1c", "Tg1g", "Tg1k"
 };
 
-static void smc_discover_core_keys_if_needed(void) {
+static void smc_discover_core_keys_if_needed_unlocked(void) {
     if (sCoreKeysDiscovered) return;
-    if (!gSMCConn && smc_open() != 0) return;
+    if (!gSMCConn) return;
 
     int totalCandidates = sizeof(kCandidateCoreKeys) / sizeof(kCandidateCoreKeys[0]);
     sValidCoreCount = 0;
@@ -612,9 +623,9 @@ static void smc_discover_core_keys_if_needed(void) {
     sCoreKeysDiscovered = (sValidCoreCount > 0);
 }
 
-static void smc_discover_gpu_keys_if_needed(void) {
+static void smc_discover_gpu_keys_if_needed_unlocked(void) {
     if (sGpuKeysDiscovered) return;
-    if (!gSMCConn && smc_open() != 0) return;
+    if (!gSMCConn) return;
 
     int totalCandidates = sizeof(kCandidateGpuKeys) / sizeof(kCandidateGpuKeys[0]);
     sValidGpuCount = 0;
@@ -649,13 +660,19 @@ static double mach_seconds_since(uint64_t start) {
     return (double)(end - start) * tb.numer / tb.denom / 1e9;
 }
 
-float smc_get_cpu_core_peak(void) {
+void smc_get_cpu_core_temps(float *avgOut, float *peakOut) {
     if (!gSMCConn && smc_open() != 0) {
-        return (s_last_cpu_core_peak > 0.0f) ? s_last_cpu_core_peak : sensors_get_cpu_max();
+        if (avgOut) {
+            *avgOut = (s_last_cpu_core_avg > 0.0f) ? s_last_cpu_core_avg : sensors_get_cpu_avg();
+        }
+        if (peakOut) {
+            *peakOut = (s_last_cpu_core_peak > 0.0f) ? s_last_cpu_core_peak : sensors_get_cpu_max();
+        }
+        return;
     }
 
     pthread_mutex_lock(&gSMCLock);
-    smc_discover_core_keys_if_needed();
+    smc_discover_core_keys_if_needed_unlocked();
 
     float maxVal = 0.0f;
     float secondMaxVal = 0.0f;
@@ -689,72 +706,52 @@ float smc_get_cpu_core_peak(void) {
     pthread_mutex_unlock(&gSMCLock);
 
     if (validReadings > 0 && maxVal > 0.0f) {
+        float avgVal = (float)(sum / validReadings);
         float peakResult = maxVal;
         if (validReadings >= 4 && secondMaxVal > 0.0f) {
-            float avgVal = (float)(sum / validReadings);
             // Average top 2 core diodes and cap isolated single-junction micro-spikes to avg + 15°C
             float clusterPeak = (maxVal + secondMaxVal) * 0.5f;
             float maxPlausiblePeak = avgVal + 15.0f;
             peakResult = (clusterPeak < maxPlausiblePeak) ? clusterPeak : maxPlausiblePeak;
         }
+        s_last_cpu_core_avg = avgVal;
         s_last_cpu_core_peak = peakResult;
         s_last_core_reading_time = mach_absolute_time();
-        return peakResult;
+        if (avgOut) *avgOut = avgVal;
+        if (peakOut) *peakOut = peakResult;
+        return;
     }
 
     // Critical Stability Guard:
     // If a transient SMC collision occurs, do NOT plummet ~20°C down to HID ambient!
-    // Hold the previous valid core peak reading for up to 3 seconds.
-    if (s_last_cpu_core_peak > 0.0f && mach_seconds_since(s_last_core_reading_time) < 3.0) {
-        return s_last_cpu_core_peak;
+    // Hold the previous valid core readings for up to 3 seconds.
+    bool withinHold = mach_seconds_since(s_last_core_reading_time) < 3.0;
+    if (avgOut) {
+        if (s_last_cpu_core_avg > 0.0f && withinHold) {
+            *avgOut = s_last_cpu_core_avg;
+        } else {
+            *avgOut = sensors_get_cpu_avg();
+        }
     }
+    if (peakOut) {
+        if (s_last_cpu_core_peak > 0.0f && withinHold) {
+            *peakOut = s_last_cpu_core_peak;
+        } else {
+            *peakOut = sensors_get_cpu_max();
+        }
+    }
+}
 
-    return sensors_get_cpu_max();
+float smc_get_cpu_core_peak(void) {
+    float peak = 0.0f;
+    smc_get_cpu_core_temps(NULL, &peak);
+    return peak;
 }
 
 float smc_get_cpu_core_avg(void) {
-    if (!gSMCConn && smc_open() != 0) {
-        return (s_last_cpu_core_avg > 0.0f) ? s_last_cpu_core_avg : sensors_get_cpu_avg();
-    }
-
-    pthread_mutex_lock(&gSMCLock);
-    smc_discover_core_keys_if_needed();
-
-    double sum = 0.0;
-    int count = 0;
-
-    if (sValidCoreCount > 0) {
-        for (int i = 0; i < sValidCoreCount; i++) {
-            uint8_t input[STRUCT_SIZE] = {0};
-            uint8_t output[STRUCT_SIZE] = {0};
-            setU32(input, OFF_KEY, sValidCoreKeys[i].keyInt);
-            setU32(input, OFF_DATASIZE, sValidCoreKeys[i].dataSize);
-            setU32(input, OFF_DATATYPE, sValidCoreKeys[i].dataType);
-            input[OFF_DATA8] = SMC_CMD_READ_BYTES;
-
-            if (smcCall_unlocked(input, output) == KERN_SUCCESS && output[OFF_RESULT] == 0) {
-                float v = *(float *)(output + OFF_BYTES);
-                if (v > 10.0f && v < 115.0f) {
-                    sum += v;
-                    count++;
-                }
-            }
-        }
-    }
-    pthread_mutex_unlock(&gSMCLock);
-
-    if (count > 0) {
-        float avg = (float)(sum / count);
-        s_last_cpu_core_avg = avg;
-        return avg;
-    }
-
-    // Hold last valid reading if transient collision occurred within 3 seconds
-    if (s_last_cpu_core_avg > 0.0f && mach_seconds_since(s_last_core_reading_time) < 3.0) {
-        return s_last_cpu_core_avg;
-    }
-
-    return sensors_get_cpu_avg();
+    float avg = 0.0f;
+    smc_get_cpu_core_temps(&avg, NULL);
+    return avg;
 }
 
 float smc_get_gpu_temp(void) {
@@ -765,7 +762,7 @@ float smc_get_gpu_temp(void) {
     }
 
     pthread_mutex_lock(&gSMCLock);
-    smc_discover_gpu_keys_if_needed();
+    smc_discover_gpu_keys_if_needed_unlocked();
 
     double sum = 0.0;
     int count = 0;

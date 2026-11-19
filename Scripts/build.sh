@@ -45,6 +45,7 @@ swiftc -O \
     -import-objc-header Sources/Bridge/CSMCBridge.h \
     Sources/Common/Models.swift \
     Sources/Common/CurveEngine.swift \
+    Sources/Common/ShellEscaping.swift \
     Sources/Common/LaunchAtLoginManager.swift \
     Sources/Common/HelperClient.swift \
     Sources/Common/FanManager.swift \
@@ -79,9 +80,9 @@ cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.6.0</string>
+    <string>1.7.0</string>
     <key>CFBundleVersion</key>
-    <string>7</string>
+    <string>8</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>CFBundleIconFile</key>

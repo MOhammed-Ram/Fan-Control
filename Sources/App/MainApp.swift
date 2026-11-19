@@ -218,8 +218,8 @@ struct Launcher {
         let isBackground = CommandLine.arguments.contains("--background") ||
             CommandLine.arguments.contains("-background")
 
-        let lockPath = "/tmp/com.macfancontrol.curveapp.lock"
-        let fd = Darwin.open(lockPath, O_CREAT | O_RDWR, 0o666)
+        let lockPath = "/tmp/com.macfancontrol.curveapp.\(getuid()).lock"
+        let fd = Darwin.open(lockPath, O_CREAT | O_RDWR, 0o600)
         var lockAcquired = false
         if fd >= 0 {
             if flock(fd, LOCK_EX | LOCK_NB) == 0 {

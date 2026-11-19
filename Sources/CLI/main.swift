@@ -1,23 +1,46 @@
 import Foundation
 
+private var gCliShouldExit: sig_atomic_t = 0
+
+func installExitSignalHandlers() {
+    gCliShouldExit = 0
+    signal(SIGINT) { _ in gCliShouldExit = 1 }
+    signal(SIGTERM) { _ in gCliShouldExit = 1 }
+}
+
+func interruptibleSleep(seconds: Double) {
+    let chunkUs: useconds_t = 50_000 // 50ms chunks
+    let totalChunks = max(1, Int((seconds * 1_000_000.0) / Double(chunkUs)))
+    for _ in 0..<totalChunks {
+        if gCliShouldExit != 0 { break }
+        usleep(chunkUs)
+    }
+}
+
 let args = CommandLine.arguments
 
 func printUsage() {
     print("""
     Fan Curve Controller CLI (fan-curve-ctl)
     Usage:
-      fan-curve-ctl status                  Show live fan speeds and SoC thermals
-      fan-curve-ctl auto                    Reset all fans to macOS automatic mode
-      fan-curve-ctl turbo                   Engage 100% emergency cooling
-      fan-curve-ctl set <rpm>               Set fixed fan RPM
-      fan-curve-ctl curve [preset]          Run fan curve controller in daemon loop
-                                            Presets: silent, balanced (default), performance
-      fan-curve-ctl monitor                 Interactive real-time terminal monitor
+      fan-curve-ctl status                           Show live fan speeds and SoC thermals
+      fan-curve-ctl auto                             Reset all fans to macOS automatic mode
+      fan-curve-ctl turbo [--hold]                   Engage 100% emergency cooling
+      fan-curve-ctl set <rpm> [--fan <idx>] [--hold] Set fixed fan RPM (all fans or specific fan)
+      fan-curve-ctl curve [preset]                   Run fan curve controller in daemon loop
+                                                     Presets: silent, balanced (default), performance
+      fan-curve-ctl monitor                          Interactive real-time terminal monitor
+
+    Options:
+      --hold       Keepalive loop (re-sends target every 1.5s to satisfy helper watchdog; Ctrl+C restores auto)
+      --fan <idx>  Target a specific fan index (0-based) for 'set'
 
     Examples:
       fan-curve-ctl status
       fan-curve-ctl curve balanced
-      fan-curve-ctl set 4500
+      fan-curve-ctl set 4500 --hold
+      fan-curve-ctl set 3500 --fan 0 --hold
+      fan-curve-ctl turbo --hold
       fan-curve-ctl auto
     """)
 }
@@ -50,49 +73,142 @@ func requireControl() {
     }
 }
 
+func restoreAutoControl() {
+    if isRoot {
+        _ = smc_set_all_auto()
+    } else if isHelper {
+        _ = HelperClient.shared.setAuto()
+    }
+}
+
+func applyFanTargets(_ targets: [(index: Int32, rpm: Float)]) {
+    if isRoot {
+        for target in targets {
+            _ = smc_set_fan_target(target.index, target.rpm)
+        }
+    } else if isHelper {
+        for target in targets {
+            _ = HelperClient.shared.setFan(index: Int(target.index), rpm: Double(target.rpm))
+        }
+    }
+}
+
+func runHoldLoop(targets: [(index: Int32, rpm: Float)]) {
+    installExitSignalHandlers()
+    while gCliShouldExit == 0 {
+        interruptibleSleep(seconds: 1.5)
+        if gCliShouldExit != 0 { break }
+        applyFanTargets(targets)
+    }
+    print("\n🛑 Restoring macOS automatic fan control...")
+    restoreAutoControl()
+}
+
 switch command {
 case "status":
     printStatus()
 
 case "auto":
     requireControl()
-    if isRoot {
-        _ = smc_set_all_auto()
-    } else {
-        _ = HelperClient.shared.setAuto()
-    }
+    restoreAutoControl()
     print("✅ All fans returned to macOS automatic mode.")
 
 case "turbo":
+    var holdMode = false
+    var argIdx = 2
+    while argIdx < args.count {
+        if args[argIdx] == "--hold" {
+            holdMode = true
+        } else {
+            print("❌ Error: Unknown option '\(args[argIdx])'")
+            print("Usage: fan-curve-ctl turbo [--hold]")
+            exit(1)
+        }
+        argIdx += 1
+    }
+
     requireControl()
     let count = smc_get_fan_count()
+    var targets: [(index: Int32, rpm: Float)] = []
     for i in 0..<count {
         let maxRpm = smc_get_fan_max_rpm(i)
-        if isRoot {
-            _ = smc_set_fan_target(i, maxRpm)
-        } else {
-            _ = HelperClient.shared.setFan(index: Int(i), rpm: Double(maxRpm))
+        targets.append((index: i, rpm: maxRpm))
+    }
+    applyFanTargets(targets)
+
+    if holdMode {
+        print("⚡️ Emergency Turbo engaged (holding at 100% max speed). Press Ctrl+C to restore macOS automatic mode.")
+        runHoldLoop(targets: targets)
+    } else {
+        print("⚡️ Emergency Turbo engaged: All fans commanded to 100% max speed.")
+        if !isRoot && isHelper {
+            print("ℹ️ Note: The helper daemon's 4-second safety watchdog will return fans to automatic mode unless --hold is passed (or 'fan-curve-ctl curve' is used).")
         }
     }
-    print("⚡️ Emergency Turbo engaged: All fans commanded to 100% max speed.")
 
 case "set":
-    guard args.count >= 3, let rpm = Float(args[2]) else {
-        print("Usage: fan-curve-ctl set <rpm>")
+    guard args.count >= 3, let rpm = Float(args[2]), rpm.isFinite, rpm >= 0 else {
+        print("❌ Error: Invalid RPM value. Expected a finite non-negative number.")
+        print("Usage: fan-curve-ctl set <rpm> [--fan <idx>] [--hold]")
         exit(1)
     }
+
+    var targetFanIdx: Int32? = nil
+    var holdMode = false
+    var argIdx = 3
+    while argIdx < args.count {
+        let flag = args[argIdx]
+        if flag == "--hold" {
+            holdMode = true
+            argIdx += 1
+        } else if flag == "--fan" {
+            guard argIdx + 1 < args.count, let parsedIdx = Int32(args[argIdx + 1]) else {
+                print("❌ Error: --fan requires a valid integer fan index.")
+                print("Usage: fan-curve-ctl set <rpm> [--fan <idx>] [--hold]")
+                exit(1)
+            }
+            targetFanIdx = parsedIdx
+            argIdx += 2
+        } else {
+            print("❌ Error: Unknown option '\(flag)'")
+            print("Usage: fan-curve-ctl set <rpm> [--fan <idx>] [--hold]")
+            exit(1)
+        }
+    }
+
     requireControl()
     let count = smc_get_fan_count()
-    for i in 0..<count {
+    let fanIndices: [Int32]
+    if let explicitIdx = targetFanIdx {
+        guard explicitIdx >= 0 && explicitIdx < count else {
+            print("❌ Error: Fan index \(explicitIdx) out of range (detected fans: \(count)).")
+            exit(1)
+        }
+        fanIndices = [explicitIdx]
+    } else {
+        fanIndices = Array(0..<count)
+    }
+
+    var targets: [(index: Int32, rpm: Float)] = []
+    var ranges: [(minR: Float, maxR: Float)] = []
+    for i in fanIndices {
         let minR = smc_get_fan_min_rpm(i)
         let maxR = smc_get_fan_max_rpm(i)
         let clamped = max(minR, min(maxR, rpm))
-        if isRoot {
-            _ = smc_set_fan_target(i, clamped)
-        } else {
-            _ = HelperClient.shared.setFan(index: Int(i), rpm: Double(clamped))
-        }
-        print("Set Fan #\(i) to \(Int(clamped)) RPM (range: \(Int(minR))-\(Int(maxR)))")
+        targets.append((index: i, rpm: clamped))
+        ranges.append((minR: minR, maxR: maxR))
+    }
+    applyFanTargets(targets)
+
+    for (target, range) in zip(targets, ranges) {
+        print("Set Fan #\(target.index) to \(Int(target.rpm)) RPM (range: \(Int(range.minR))-\(Int(range.maxR)))")
+    }
+
+    if holdMode {
+        print("🔒 Holding target fan speed(s). Press Ctrl+C to restore macOS automatic mode.")
+        runHoldLoop(targets: targets)
+    } else if !isRoot && isHelper {
+        print("ℹ️ Note: The helper daemon's 4-second safety watchdog will return fans to automatic mode unless --hold is passed (or 'fan-curve-ctl curve' is used).")
     }
 
 case "curve":
@@ -115,8 +231,9 @@ default:
 
 func printStatus() {
     let fanCount = smc_get_fan_count()
-    let cpuAvg = smc_get_cpu_core_avg()
-    let cpuMax = smc_get_cpu_core_peak()
+    var cpuAvg: Float = 0.0
+    var cpuMax: Float = 0.0
+    smc_get_cpu_core_temps(&cpuAvg, &cpuMax)
     let gpuTemp = smc_get_gpu_temp()
     let battery = sensors_get_battery_temp()
     let storage = sensors_get_storage_temp()
@@ -164,37 +281,20 @@ func runCurveLoop(preset: ProfilePreset) {
     print("🚀 Starting Fan Curve Engine with preset: \(preset.rawValue)")
     print("   Press Ctrl+C to terminate and restore macOS automatic mode.")
 
-    signal(SIGINT) { _ in
-        print("\n🛑 Restoring macOS automatic fan control...")
-        if smc_is_root() {
-            _ = smc_set_all_auto()
-        } else {
-            _ = HelperClient.shared.setAuto()
-        }
-        smc_close()
-        sensors_close()
-        exit(0)
-    }
-    signal(SIGTERM) { _ in
-        if smc_is_root() {
-            _ = smc_set_all_auto()
-        } else {
-            _ = HelperClient.shared.setAuto()
-        }
-        smc_close()
-        sensors_close()
-        exit(0)
-    }
+    installExitSignalHandlers()
 
     let engine = CurveEngine(hysteresisBand: 2.0, criticalThreshold: 100.0, emaAlpha: 0.25)
     let points = preset.defaultPoints
     let fanCount = smc_get_fan_count()
     var commandedRPMs: [Int: Double] = [:]
 
-    while true {
-        let rawAvg = Double(smc_get_cpu_core_avg())
+    while gCliShouldExit == 0 {
+        var rawAvgF: Float = 0.0
+        var peakTempF: Float = 0.0
+        smc_get_cpu_core_temps(&rawAvgF, &peakTempF)
+        let rawAvg = Double(rawAvgF)
         let smoothedTemp = engine.smoothTemperature(rawAvg)
-        let peakTemp = Double(smc_get_cpu_core_peak())
+        let peakTemp = Double(peakTempF)
         let targetPercent = engine.evaluate(temp: smoothedTemp, points: points, useHysteresis: true)
 
         var statusParts: [String] = []
@@ -219,22 +319,25 @@ func runCurveLoop(preset: ProfilePreset) {
         print(String(format: "[%@] SoC Avg: %.1f°C (Smooth: %.1f°C, Peak: %.1f°C) -> Target: %3.0f%% | %@",
                      timeStr, rawAvg, smoothedTemp, peakTemp, targetPercent, statusParts.joined(separator: " | ")))
 
-        Thread.sleep(forTimeInterval: 1.0)
+        interruptibleSleep(seconds: 1.0)
     }
+
+    print("\n🛑 Restoring macOS automatic fan control...")
+    restoreAutoControl()
 }
 
 func runMonitorLoop() {
     print("\u{001B}[2J") // Clear screen
     let fanCount = smc_get_fan_count()
 
-    signal(SIGINT) { _ in
-        print("\u{001B}[?25h") // Show cursor
-        exit(0)
-    }
+    installExitSignalHandlers()
 
-    while true {
-        let temp = Double(smc_get_cpu_core_avg())
-        let peakTemp = Double(smc_get_cpu_core_peak())
+    while gCliShouldExit == 0 {
+        var tempF: Float = 0.0
+        var peakTempF: Float = 0.0
+        smc_get_cpu_core_temps(&tempF, &peakTempF)
+        let temp = Double(tempF)
+        let peakTemp = Double(peakTempF)
         let gpuTemp = Double(smc_get_gpu_temp())
         let battery = Double(sensors_get_battery_temp())
         let storage = Double(sensors_get_storage_temp())
@@ -263,6 +366,8 @@ func runMonitorLoop() {
         print("════════════════════════════════════════════════════════════")
         print("  Press Ctrl+C to exit monitor.")
 
-        Thread.sleep(forTimeInterval: 1.0)
+        interruptibleSleep(seconds: 1.0)
     }
+
+    print("\u{001B}[?25h") // Show cursor
 }

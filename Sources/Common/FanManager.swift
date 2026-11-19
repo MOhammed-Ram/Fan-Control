@@ -457,8 +457,11 @@ public final class FanManager: ObservableObject {
             self.fans = currentFans
         }
 
-        let rawAvg = Double(smc_get_cpu_core_avg())
-        let rawPeak = Double(smc_get_cpu_core_peak())
+        var coreAvg: Float = 0
+        var corePeak: Float = 0
+        smc_get_cpu_core_temps(&coreAvg, &corePeak)
+        let rawAvg = Double(coreAvg)
+        let rawPeak = Double(corePeak)
         let rawGpu = Double(smc_get_gpu_temp())
         let battery = Double(sensors_get_battery_temp())
         let storage = Double(sensors_get_storage_temp())
@@ -647,11 +650,13 @@ public final class FanManager: ObservableObject {
                     let requestedRPM = (!linkFans && fan.index == 1) ? manualRPMRight : manualRPM
                     let clamped = max(fan.minRPM, min(fan.maxRPM, requestedRPM))
                     let current = commandedRPMs[fan.index] ?? fan.currentRPM
+                    let gap = current - clamped
+                    let effectiveDec = (gap > 600.0) ? max(maxDec, gap * 0.25) : maxDec
                     let nextRPM = CurveEngine.slewLimit(
                         current: current,
                         target: clamped,
                         maxIncrease: maxInc,
-                        maxDecrease: maxDec
+                        maxDecrease: effectiveDec
                     )
                     commandedRPMs[fan.index] = nextRPM
                     batchRPMs.append(nextRPM)
@@ -668,13 +673,12 @@ public final class FanManager: ObservableObject {
             gpuCurveEngine.criticalThreshold = criticalThreshold
             gpuCurveEngine.emaAlpha = tempSmoothingAlpha
 
+            // pollHardware() already applies EMA smoothing to thermals.cpuAvg / cpuPeak / gpu.
             let drivingTemp = curveDrivingTemp
-            let smoothedTemp = curveEngine.smoothTemperature(drivingTemp)
-            let primaryTargetPercent = curveEngine.evaluate(temp: smoothedTemp, points: activePoints, useHysteresis: true)
+            let primaryTargetPercent = curveEngine.evaluate(temp: drivingTemp, points: activePoints, useHysteresis: true)
 
             let gpuDrivingTemp = max(thermals.gpu, thermals.cpuAvg * 0.85)
-            let smoothedGpuTemp = gpuCurveEngine.smoothTemperature(gpuDrivingTemp)
-            let secondaryTargetPercent = gpuCurveEngine.evaluate(temp: smoothedGpuTemp, points: activePoints, useHysteresis: true)
+            let secondaryTargetPercent = gpuCurveEngine.evaluate(temp: gpuDrivingTemp, points: activePoints, useHysteresis: true)
 
             var batchRPMs: [Double] = []
             var primaryCurveTargetRPM: Double = 0.0
@@ -810,7 +814,8 @@ public final class FanManager: ObservableObject {
             targetScript = appScript
         }
 
-        let appleScriptSource = "do shell script \"bash '\(targetScript)'\" with administrator privileges"
+        let shellCmd = "bash \(ShellEscaping.posixSingleQuote(targetScript))"
+        let appleScriptSource = ShellEscaping.appleScriptDoShellScript(shellCmd, administratorPrivileges: true)
         var error: NSDictionary?
         if let script = NSAppleScript(source: appleScriptSource) {
             script.executeAndReturnError(&error)
@@ -884,7 +889,10 @@ public final class FanManager: ObservableObject {
             }
             return true
         } catch {
-            let scriptSource = "do shell script \"rm -rf '\(targetPath)'; cp -R '\(currentPath)' '\(targetPath)'; open '\(targetPath)'\" with administrator privileges"
+            let quotedTarget = ShellEscaping.posixSingleQuote(targetPath)
+            let quotedCurrent = ShellEscaping.posixSingleQuote(currentPath)
+            let shellCmd = "rm -rf \(quotedTarget) && cp -R \(quotedCurrent) \(quotedTarget) && open \(quotedTarget)"
+            let scriptSource = ShellEscaping.appleScriptDoShellScript(shellCmd, administratorPrivileges: true)
             var scriptError: NSDictionary?
             if let script = NSAppleScript(source: scriptSource) {
                 script.executeAndReturnError(&scriptError)
